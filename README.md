@@ -56,16 +56,26 @@ Notes:
 
 ## Render cold starts
 
-Free Render web services sleep after ~15 minutes idle. To keep the API warm:
+Free Render web services **sleep after ~15 minutes** idle. The next request can take **30–60+ seconds** (Nest boot + Prisma + Aiven). That feels like “every API is slow” after idle.
 
-1. Prefer **paid / always-on** instance type when you need reliable latency.
-2. Or use the repo workflow [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml):
-   - In GitHub → **Settings → Secrets and variables → Actions**, add  
-     `RENDER_HEALTH_URL` = `https://<your-service>.onrender.com/health`
-   - Workflow runs every 5 minutes (and via **Actions → Keep Render warm → Run workflow**)
-3. Optionally also add the same URL in [UptimeRobot](https://uptimerobot.com) (5‑min HTTP monitor) as a backup if GitHub cron delays.
+### Real fix (recommended)
+Upgrade the web service instance from **Free** → **Starter** (or any paid type) in Render → service → **Instance Type**. Paid instances stay always-on (no spin-down).
 
-`/health` is public and checks Postgres so wake-ups also warm the DB connection.
+### Free-tier mitigations (already in repo)
+1. GitHub Action [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml) pings `/health` every 5 minutes.  
+   Set secret `RENDER_HEALTH_URL` = `https://<your-service>.onrender.com/health`
+2. Add the same URL in [UptimeRobot](https://uptimerobot.com) (HTTP monitor, 5 min) — more reliable than GitHub cron alone.
+3. FE warms the API on page load (`_app.jsx` health ping).
+
+### Optional DB URL tuning (Aiven)
+Append pool limits so wake-ups don’t open too many connections:
+
+```text
+DATABASE_URL=...dev_db?sslmode=require&connection_limit=5&pool_timeout=10
+```
+
+### Expectation
+Keep-alive **reduces** sleeps; it does **not** remove free-tier CPU limits. For production UX, use a paid Render instance.
 
 ## Production security checklist
 

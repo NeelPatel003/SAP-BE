@@ -8,7 +8,10 @@ import cookieParser = require('cookie-parser');
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    // Faster cold start on Render free instances
+    logger: process.env.NODE_ENV === 'production' ? ['error', 'warn', 'log'] : undefined,
+  });
   const config = app.get(ConfigService);
   const nodeEnv = config.get<string>('NODE_ENV') || process.env.NODE_ENV || 'development';
   const enableSwagger =

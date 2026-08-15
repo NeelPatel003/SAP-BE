@@ -48,11 +48,12 @@ export class AuthController {
       (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
       req.ip;
     const result = await this.auth.login(dto, ip);
-    setAuthCookies(res, this.config, {
+    const csrfToken = setAuthCookies(res, this.config, {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
-    return { user: result.user };
+    // Body CSRF for cross-origin FE (cannot read BE cookie via document.cookie)
+    return { user: result.user, csrfToken };
   }
 
   @Public()
@@ -70,11 +71,11 @@ export class AuthController {
     const refreshToken =
       getCookie(req, REFRESH_COOKIE) || dto?.refreshToken || '';
     const tokens = await this.auth.refresh(refreshToken);
-    setAuthCookies(res, this.config, {
+    const csrfToken = setAuthCookies(res, this.config, {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
     });
-    return { ok: true };
+    return { ok: true, csrfToken };
   }
 
   @Public()

@@ -7,9 +7,24 @@ export const REFRESH_COOKIE = 'teamora_refresh';
 export const CSRF_COOKIE = 'teamora_csrf';
 export const CSRF_HEADER = 'x-csrf-token';
 
+function resolveSameSite(
+  config: ConfigService,
+): 'lax' | 'strict' | 'none' {
+  const raw = (config.get<string>('COOKIE_SAMESITE') || '').toLowerCase();
+  if (raw === 'none' || raw === 'lax' || raw === 'strict') {
+    return raw;
+  }
+  // Split FE/BE hosts (Vercel + Render) need SameSite=None so credentialed
+  // cross-origin fetch sends cookies. Localhost same-site keeps lax.
+  const nodeEnv = config.get<string>('NODE_ENV') || process.env.NODE_ENV;
+  return nodeEnv === 'production' ? 'none' : 'lax';
+}
+
 function baseCookieOptions(config: ConfigService): CookieOptions {
   const nodeEnv = config.get<string>('NODE_ENV') || process.env.NODE_ENV;
+  const sameSite = resolveSameSite(config);
   const secure =
+    sameSite === 'none' ||
     nodeEnv === 'production' ||
     config.get<string>('COOKIE_SECURE') === 'true';
   const domain = config.get<string>('COOKIE_DOMAIN') || undefined;
@@ -17,7 +32,7 @@ function baseCookieOptions(config: ConfigService): CookieOptions {
   return {
     httpOnly: true,
     secure,
-    sameSite: 'lax',
+    sameSite,
     path: '/',
     ...(domain ? { domain } : {}),
   };

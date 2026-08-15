@@ -36,6 +36,24 @@ If Prisma generate fails on sandboxed machines, engines are cached under `prisma
 - Swagger: http://localhost:4000/docs  
 - Health: http://localhost:4000/health  
 
+## Render deploy
+
+**Build command**
+```bash
+npm ci --include=dev && npm run build
+```
+
+**Start command**
+```bash
+npx prisma migrate deploy && npm run start:prod
+```
+
+Notes:
+- `postinstall` runs `prisma generate` (required for Nest build).
+- `prisma`, `typescript`, and `@nestjs/cli` are in `dependencies` so production installs still build.
+- Use Node **20+**.
+- Do not set `PORT` (Render injects it).
+
 ## Render cold starts
 
 Free Render web services sleep after ~15 minutes idle. To keep the API warm:

@@ -19,6 +19,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { EmailModule } from './modules/email/email.module';
 import { AiModule } from './modules/ai/ai.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
+import { KeepWarmModule } from './modules/keep-warm/keep-warm.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { CsrfGuard } from './common/guards/csrf.guard';
@@ -52,6 +53,7 @@ import { HealthController } from './health.controller';
     NotificationsModule,
     EmailModule,
     AiModule,
+    KeepWarmModule,
   ],
   controllers: [HealthController],
   providers: [

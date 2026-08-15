@@ -62,10 +62,12 @@ Free Render web services **sleep after ~15 minutes** idle. The next request can 
 Upgrade the web service instance from **Free** → **Starter** (or any paid type) in Render → service → **Instance Type**. Paid instances stay always-on (no spin-down).
 
 ### Free-tier mitigations (already in repo)
-1. GitHub Action [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml) pings `/health` every 5 minutes.  
-   Set secret `RENDER_HEALTH_URL` = `https://<your-service>.onrender.com/health`
-2. Add the same URL in [UptimeRobot](https://uptimerobot.com) (HTTP monitor, 5 min) — more reliable than GitHub cron alone.
+1. **In-app cron** (every 5 min) — `KeepWarmModule` pings `/health` while the process is up.  
+   Set on Render: `KEEP_WARM_URL=https://<your-service>.onrender.com/health` (and optional `KEEP_WARM_ENABLED=true`).
+2. GitHub Action [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml) — set `HEALTH_URL` in that YAML.  
+   Needed to **wake** a sleeping instance (in-app cron is dead while spun down).
 3. FE warms the API on page load (`_app.jsx` health ping).
+4. Optional: [UptimeRobot](https://uptimerobot.com) 5‑min HTTP monitor on the same URL.
 
 ### Optional DB URL tuning (Aiven)
 Append pool limits so wake-ups don’t open too many connections:

@@ -31,3 +31,7 @@ services:
         value: noreply@teamora.app
       - key: ENABLE_SWAGGER
         value: "false"
+      - key: KEEP_WARM_ENABLED
+        value: "true"
+      - key: KEEP_WARM_URL
+        sync: false

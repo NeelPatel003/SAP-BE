@@ -16,6 +16,7 @@ import { CompanySettingsModule } from '../company-settings/company-settings.modu
 import { UsageModule } from '../usage/usage.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EmailModule } from '../email/email.module';
+import { AuditModule } from '../audit/audit.module';
 import { SerialService } from './serial.service';
 
 @Module({
@@ -24,6 +25,7 @@ import { SerialService } from './serial.service';
     UsageModule,
     NotificationsModule,
     EmailModule,
+    AuditModule,
   ],
   controllers: [StoreController],
   providers: [
@@ -44,11 +46,13 @@ import { SerialService } from './serial.service';
   exports: [
     StockEngine,
     FifoEngine,
+    BatchEngine,
     GrnService,
     IssueService,
     AgingEngine,
     StoreQueryService,
     LocationEngine,
+    ReservationEngine,
   ],
 })
 export class StoreModule {}

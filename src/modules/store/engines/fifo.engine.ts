@@ -1,27 +1,50 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveStorePolicy } from '../../../common/workflow/company-workflow';
 
 @Injectable()
 export class FifoEngine {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Oldest available batch rows with positive qty for material (+ optional warehouse). */
+  /** Oldest batch rows with positive qty for material (+ optional warehouse / status). */
   async suggestBatches(
     companyId: string,
     materialId: string,
     quantity: number,
     warehouseId?: string,
+    status: string = 'available',
   ) {
+    const [company, material] = await Promise.all([
+      this.prisma.company.findUnique({
+        where: { id: companyId },
+        select: { settings: true },
+      }),
+      this.prisma.material.findFirst({
+        where: { id: materialId, companyId },
+        select: { shelfLifeDays: true },
+      }),
+    ]);
+    const useFefo =
+      resolveStorePolicy(company?.settings).fefoEnabled &&
+      material?.shelfLifeDays != null;
     const stocks = await this.prisma.inventoryStock.findMany({
       where: {
         companyId,
         materialId,
-        status: 'available',
+        status,
         quantity: { gt: 0 },
         ...(warehouseId ? { warehouseId } : {}),
       },
       include: { batch: true },
-      orderBy: [{ batch: { receivedAt: 'asc' } }, { batch: { batchNumber: 'asc' } }],
+      orderBy: useFefo
+        ? [
+            { batch: { expiryDate: { sort: 'asc', nulls: 'last' } } },
+            { batch: { receivedAt: 'asc' } },
+          ]
+        : [
+            { batch: { receivedAt: 'asc' } },
+            { batch: { batchNumber: 'asc' } },
+          ],
     });
 
     const picks: {
@@ -52,6 +75,7 @@ export class FifoEngine {
       picks,
       shortfall: remaining > 0 ? remaining : 0,
       fullyCovered: remaining <= 0,
+      policy: useFefo ? 'FEFO' : 'FIFO',
     };
   }
 

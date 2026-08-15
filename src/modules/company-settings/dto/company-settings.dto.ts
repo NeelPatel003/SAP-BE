@@ -33,6 +33,44 @@ export class CompanyStoreSettingsDto {
   @IsOptional()
   @IsIn(['comfortable', 'compact'])
   layoutDensity?: 'comfortable' | 'compact';
+
+  @ApiPropertyOptional({ type: [Number], example: [30, 60, 90, 180, 365] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  agingBands?: number[];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(3650)
+  nearExpiryDays?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(36500)
+  deadStockDays?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(36500)
+  slowStockDays?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  fefoEnabled?: boolean;
 }
 
 export class WorkflowSettingsDto {

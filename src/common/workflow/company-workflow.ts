@@ -21,10 +21,64 @@ export type CompanySettingsBlob = {
   defaultWarehouseId?: string | null;
   defaultQcRequired?: boolean;
   layoutDensity?: 'comfortable' | 'compact';
+  agingBands?: number[];
+  nearExpiryDays?: number;
+  deadStockDays?: number;
+  slowStockDays?: number;
+  fefoEnabled?: boolean;
   industryTemplate?: string;
   workflow?: Partial<CompanyWorkflowSettings>;
   billing?: Partial<CompanyBillingSettings>;
 };
+
+export type CompanyStorePolicy = {
+  agingBands: number[];
+  nearExpiryDays: number;
+  deadStockDays: number;
+  slowStockDays: number;
+  fefoEnabled: boolean;
+};
+
+export const DEFAULT_STORE_POLICY: CompanyStorePolicy = {
+  agingBands: [30, 60, 90, 180, 365],
+  nearExpiryDays: 30,
+  deadStockDays: 180,
+  slowStockDays: 90,
+  fefoEnabled: false,
+};
+
+export function resolveStorePolicy(raw: unknown): CompanyStorePolicy {
+  const blob = parseSettingsBlob(raw);
+  const bands = Array.isArray(blob.agingBands)
+    ? [...new Set(blob.agingBands.filter((n) => Number.isInteger(n) && n > 0))]
+        .sort((a, b) => a - b)
+        .slice(0, 8)
+    : [];
+  const deadStockDays =
+    typeof blob.deadStockDays === 'number' && blob.deadStockDays >= 0
+      ? Math.floor(blob.deadStockDays)
+      : DEFAULT_STORE_POLICY.deadStockDays;
+  const slowStockDays =
+    typeof blob.slowStockDays === 'number' && blob.slowStockDays >= 0
+      ? Math.floor(blob.slowStockDays)
+      : Math.min(
+          DEFAULT_STORE_POLICY.slowStockDays,
+          Math.max(1, Math.floor(deadStockDays / 2)),
+        );
+  return {
+    agingBands: bands.length ? bands : DEFAULT_STORE_POLICY.agingBands,
+    nearExpiryDays:
+      typeof blob.nearExpiryDays === 'number' && blob.nearExpiryDays >= 0
+        ? Math.floor(blob.nearExpiryDays)
+        : DEFAULT_STORE_POLICY.nearExpiryDays,
+    deadStockDays,
+    slowStockDays: Math.min(slowStockDays, deadStockDays),
+    fefoEnabled:
+      typeof blob.fefoEnabled === 'boolean'
+        ? blob.fefoEnabled
+        : DEFAULT_STORE_POLICY.fefoEnabled,
+  };
+}
 
 export const DEFAULT_WORKFLOW: CompanyWorkflowSettings = {
   grnRequiresPurchaseOrder: true,

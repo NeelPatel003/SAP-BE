@@ -117,6 +117,24 @@ export class NotificationsService {
     });
   }
 
+  async markUnread(companyId: string, userId: string, id: string) {
+    const n = await this.prisma.notification.findFirst({
+      where: { id, companyId, userId },
+    });
+    if (!n) throw new NotFoundException('Notification not found');
+    return this.prisma.notification.update({
+      where: { id },
+      data: { readAt: null },
+    });
+  }
+
+  async unreadCount(companyId: string, userId: string) {
+    const unreadCount = await this.prisma.notification.count({
+      where: { companyId, userId, readAt: null },
+    });
+    return { unreadCount };
+  }
+
   async markAllRead(companyId: string, userId: string) {
     await this.prisma.notification.updateMany({
       where: { companyId, userId, readAt: null },

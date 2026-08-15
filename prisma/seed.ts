@@ -233,6 +233,24 @@ const ROLES = [
       ...ALL_DISPATCH,
     ],
   },
+  {
+    code: 'MANAGEMENT',
+    name: 'Management',
+    scope: 'COMPANY' as const,
+    isSystem: true,
+    permissions: [
+      'auth.login',
+      'store.dashboard.read',
+      'store.stock.read',
+      'store.reports.read',
+      'store.grn.read',
+      'purchase.orders.read',
+      'production.orders.read',
+      'accounts.grn.read',
+      'dispatch.read',
+      'qc.queue.read',
+    ],
+  },
 ];
 
 const MODULES = [
@@ -252,6 +270,25 @@ const UNITS = [
   { code: 'LTR', name: 'Litre' },
   { code: 'MTR', name: 'Meter' },
   { code: 'BOX', name: 'Box' },
+  { code: 'SET', name: 'Set' },
+  { code: 'PAIR', name: 'Pair' },
+  { code: 'GM', name: 'Gram' },
+  { code: 'TON', name: 'Tonne' },
+  { code: 'SQM', name: 'Square Meter' },
+  { code: 'ROLL', name: 'Roll' },
+  { code: 'BAG', name: 'Bag' },
+];
+
+const CATEGORY_CATALOG = [
+  { code: 'RM', name: 'Raw Material', description: 'Raw materials' },
+  { code: 'PACK', name: 'Packing', description: 'Packaging materials' },
+  { code: 'CONS', name: 'Consumables', description: 'Consumables' },
+  { code: 'CHEM', name: 'Chemicals', description: 'Chemicals & reagents' },
+  { code: 'FG', name: 'Finished Goods', description: 'Finished goods' },
+  { code: 'SFG', name: 'Semi-Finished', description: 'Semi-finished goods' },
+  { code: 'TOOL', name: 'Tools', description: 'Tools & fixtures' },
+  { code: 'ASSET', name: 'Assets', description: 'Capital assets' },
+  { code: 'SPARES', name: 'Spares', description: 'Spare parts' },
 ];
 
 async function main() {
@@ -371,21 +408,45 @@ async function main() {
     update: {
       name: 'Acme Corp',
       status: 'active',
-      enabledModules: ['store', 'purchase', 'qc', 'production', 'ppc', 'accounts'],
+      enabledModules: [
+        'store',
+        'purchase',
+        'qc',
+        'production',
+        'ppc',
+        'accounts',
+        'ai',
+        'dispatch',
+      ],
       primaryColor: '#f97316',
       secondaryColor: '#0f172a',
+      settings: {
+        billing: { aiEnabled: true, monthlyAiTokenCap: 100000 },
+      },
     },
     create: {
       name: 'Acme Corp',
       slug: 'acme-corp',
       status: 'active',
-      enabledModules: ['store', 'purchase', 'qc', 'production', 'ppc', 'accounts'],
+      enabledModules: [
+        'store',
+        'purchase',
+        'qc',
+        'production',
+        'ppc',
+        'accounts',
+        'ai',
+        'dispatch',
+      ],
       plan: 'starter',
       displayName: 'Acme Corp',
       primaryColor: '#f97316',
       secondaryColor: '#0f172a',
       currency: 'INR',
       timezone: 'Asia/Kolkata',
+      settings: {
+        billing: { aiEnabled: true, monthlyAiTokenCap: 100000 },
+      },
     },
   });
 
@@ -467,6 +528,22 @@ async function main() {
         description: 'Raw materials',
       },
     });
+  }
+
+  for (const cat of CATEGORY_CATALOG) {
+    const existing = await prisma.materialCategory.findFirst({
+      where: { companyId: acme.id, code: cat.code },
+    });
+    if (!existing) {
+      await prisma.materialCategory.create({
+        data: {
+          companyId: acme.id,
+          code: cat.code,
+          name: cat.name,
+          description: cat.description,
+        },
+      });
+    }
   }
 
   let wh = await prisma.warehouse.findFirst({

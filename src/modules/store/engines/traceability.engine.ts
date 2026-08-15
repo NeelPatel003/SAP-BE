@@ -22,8 +22,14 @@ export class TraceabilityEngine {
     const links = await this.prisma.batchTraceabilityLink.findMany({
       where:
         direction === 'forward'
-          ? { companyId, fromBatchId: batchId }
-          : { companyId, toBatchId: batchId },
+          ? {
+              companyId,
+              OR: [{ fromBatchId: batchId }, { toBatchId: batchId }],
+            }
+          : {
+              companyId,
+              OR: [{ toBatchId: batchId }, { fromBatchId: batchId }],
+            },
       orderBy: { createdAt: 'asc' },
     });
 
@@ -42,6 +48,66 @@ export class TraceabilityEngine {
       },
     });
 
+    const dispatchLinks = links.filter(
+      (l) =>
+        l.linkType === 'batch_to_dispatch' ||
+        l.linkType === 'dispatch_to_customer',
+    );
+    const customers = [
+      ...new Set(
+        dispatchLinks
+          .map((l) => {
+            const meta = (l.meta || {}) as { customerName?: string };
+            return meta.customerName;
+          })
+          .filter(Boolean),
+      ),
+    ];
+
+    const productionOrders = issues
+      .map((i) => i.materialIssue.productionOrder?.number)
+      .filter(Boolean) as string[];
+
+    const timeline = [
+      batch.goodsReceipt
+        ? {
+            step: 'grn',
+            label: `GRN ${batch.goodsReceipt.number}`,
+            at: batch.receivedAt,
+          }
+        : null,
+      ...issues.map((i) => ({
+        step: 'issue',
+        label: `Issue ${i.materialIssue.number}`,
+        at: i.materialIssue.createdAt,
+        productionOrder: i.materialIssue.productionOrder?.number,
+      })),
+      ...links
+        .filter((l) => l.linkType === 'production_to_fg')
+        .map((l) => ({
+          step: 'fg',
+          label: 'Finished goods',
+          at: l.createdAt,
+          referenceId: l.referenceId,
+        })),
+      ...dispatchLinks.map((l) => {
+        const meta = (l.meta || {}) as {
+          customerName?: string;
+          dispatchNumber?: string;
+        };
+        return {
+          step:
+            l.linkType === 'dispatch_to_customer' ? 'customer' : 'dispatch',
+          label:
+            l.linkType === 'dispatch_to_customer'
+              ? `Customer ${meta.customerName || '—'}`
+              : `Dispatch ${meta.dispatchNumber || l.referenceId}`,
+          at: l.createdAt,
+          customerName: meta.customerName,
+        };
+      }),
+    ].filter(Boolean);
+
     return {
       batch,
       direction,
@@ -52,13 +118,14 @@ export class TraceabilityEngine {
         productionOrder: i.materialIssue.productionOrder,
         quantity: i.quantity,
       })),
+      timeline,
       chain: {
         supplierGrn: batch.goodsReceiptId,
         grnNumber: batch.goodsReceipt?.number,
         batchNumber: batch.batchNumber,
-        productionOrders: issues
-          .map((i) => i.materialIssue.productionOrder?.number)
-          .filter(Boolean),
+        productionOrders,
+        customers,
+        dispatchIds: dispatchLinks.map((l) => l.referenceId).filter(Boolean),
       },
     };
   }

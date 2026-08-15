@@ -14,7 +14,7 @@ import {
 } from '../../common/guards/module-enabled.guard';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
 
-class AiSummarizeDto {
+class AiPromptDto {
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -34,9 +34,57 @@ export class AiController {
   @RequirePermissions('store.stock.read')
   summarize(
     @CurrentUser() user: AuthUser,
-    @Body() body: AiSummarizeDto,
+    @Body() body: AiPromptDto,
   ) {
     return this.ai.summarizeInventory(
+      requireCompanyId(user),
+      user.id,
+      body?.prompt,
+    );
+  }
+
+  @Post('aging-brief')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @RequirePermissions('store.dashboard.read')
+  agingBrief(
+    @CurrentUser() user: AuthUser,
+    @Body() body: AiPromptDto,
+  ) {
+    return this.ai.agingBrief(requireCompanyId(user), user.id, body?.prompt);
+  }
+
+  @Post('grn-qc-brief')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @RequirePermissions('store.grn.read')
+  grnQcBrief(
+    @CurrentUser() user: AuthUser,
+    @Body() body: AiPromptDto,
+  ) {
+    return this.ai.grnQcBrief(requireCompanyId(user), user.id, body?.prompt);
+  }
+
+  @Post('reorder-suggestions')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @RequirePermissions('store.stock.read')
+  reorder(
+    @CurrentUser() user: AuthUser,
+    @Body() body: AiPromptDto,
+  ) {
+    return this.ai.reorderSuggestions(
+      requireCompanyId(user),
+      user.id,
+      body?.prompt,
+    );
+  }
+
+  @Post('accounts-check')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @RequirePermissions('accounts.grn.read')
+  accountsCheck(
+    @CurrentUser() user: AuthUser,
+    @Body() body: AiPromptDto,
+  ) {
+    return this.ai.accountsCheck(
       requireCompanyId(user),
       user.id,
       body?.prompt,

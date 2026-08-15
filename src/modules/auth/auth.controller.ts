@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   Req,
   Res,
@@ -34,6 +35,14 @@ export class AuthController {
     private readonly config: ConfigService,
   ) {}
 
+  private clientMeta(req: Request) {
+    const ip =
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+      req.ip;
+    const userAgent = req.headers['user-agent'] || null;
+    return { ip, userAgent };
+  }
+
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -44,15 +53,11 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const ip =
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-      req.ip;
-    const result = await this.auth.login(dto, ip);
+    const result = await this.auth.login(dto, this.clientMeta(req));
     const csrfToken = setAuthCookies(res, this.config, {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
-    // Body CSRF for cross-origin FE (cannot read BE cookie via document.cookie)
     return { user: result.user, csrfToken };
   }
 
@@ -70,7 +75,7 @@ export class AuthController {
   ) {
     const refreshToken =
       getCookie(req, REFRESH_COOKIE) || dto?.refreshToken || '';
-    const tokens = await this.auth.refresh(refreshToken);
+    const tokens = await this.auth.refresh(refreshToken, this.clientMeta(req));
     const csrfToken = setAuthCookies(res, this.config, {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -82,7 +87,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Logout; revoke refresh token if present and clear cookies',
+    summary: 'Logout current session only; clear cookies',
   })
   async logout(
     @Body() body: LogoutDto,
@@ -91,11 +96,41 @@ export class AuthController {
   ) {
     const refresh =
       getCookie(req, REFRESH_COOKIE) || body?.refreshToken || undefined;
-    if (refresh) {
-      await this.auth.logoutByRefreshToken(refresh);
-    }
+    await this.auth.logoutCurrent(refresh);
     clearAuthCookies(res, this.config);
     return { success: true };
+  }
+
+  @Post('logout-all')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revoke all refresh sessions for this user' })
+  async logoutAll(
+    @CurrentUser() user: AuthUser,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.auth.logoutAll(user.id);
+    clearAuthCookies(res, this.config);
+    return { success: true };
+  }
+
+  @Get('sessions')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List active sessions for current user' })
+  listSessions(@CurrentUser() user: AuthUser, @Req() req: Request) {
+    const refresh = getCookie(req, REFRESH_COOKIE) || undefined;
+    return this.auth.listSessions(user.id, refresh);
+  }
+
+  @Post('sessions/:id/revoke')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revoke one session by id' })
+  revokeSession(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ) {
+    return this.auth.revokeSession(user.id, id);
   }
 
   @Get('me')

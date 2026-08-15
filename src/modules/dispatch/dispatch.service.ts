@@ -210,6 +210,38 @@ export class DispatchService {
             });
           }
         }
+
+        await tx.batchTraceabilityLink.create({
+          data: {
+            companyId,
+            linkType: 'batch_to_dispatch',
+            fromBatchId: line.batchId,
+            referenceType: 'dispatch_order',
+            referenceId: order.id,
+            meta: {
+              customerName: order.customerName,
+              quantity: line.quantity,
+              materialId: line.materialId,
+            },
+          },
+        });
+
+        if (order.customerName) {
+          await tx.batchTraceabilityLink.create({
+            data: {
+              companyId,
+              linkType: 'dispatch_to_customer',
+              fromBatchId: line.batchId,
+              referenceType: 'customer',
+              referenceId: order.id,
+              meta: {
+                customerName: order.customerName,
+                dispatchNumber: order.number,
+                quantity: line.quantity,
+              },
+            },
+          });
+        }
       }
 
       return tx.dispatchOrder.update({

@@ -80,6 +80,9 @@ enum TraceLinkType {
   issue_to_production
   batch_to_return
   batch_to_transfer
+  production_to_fg
+  batch_to_dispatch
+  dispatch_to_customer
 }
 
 model Company {
@@ -133,6 +136,9 @@ model Company {
   bomHeaders             BomHeader[]
   inventorySerials       InventorySerial[]
   dispatchOrders         DispatchOrder[]
+  stockVerifications     StockVerification[]
+  supplierInvoices       SupplierInvoice[]
+  accountsBookings       AccountsBooking[]
 
   @@map("companies")
 }
@@ -244,17 +250,23 @@ model UserRole {
 }
 
 model RefreshToken {
-  id        String    @id @default(cuid())
-  userId    String    @map("user_id")
-  tokenHash String    @map("token_hash")
-  expiresAt DateTime  @map("expires_at")
-  revokedAt DateTime? @map("revoked_at")
-  createdAt DateTime  @default(now()) @map("created_at")
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  tokenHash    String    @map("token_hash")
+  expiresAt    DateTime  @map("expires_at")
+  revokedAt    DateTime? @map("revoked_at")
+  familyId     String    @map("family_id")
+  replacedById String?   @map("replaced_by_id")
+  userAgent    String?   @map("user_agent") @db.VarChar(512)
+  ip           String?   @db.VarChar(64)
+  label        String?   @db.VarChar(120)
+  createdAt    DateTime  @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([tokenHash])
+  @@index([familyId])
   @@map("refresh_tokens")
 }
 
@@ -660,7 +672,9 @@ model GoodsReceipt {
   receivingPerson String?   @map("receiving_person")
   readyForAccounts Boolean  @default(false) @map("ready_for_accounts")
   accountsBookedAt DateTime? @map("accounts_booked_at")
+  supplierInvoiceId String?  @map("supplier_invoice_id")
   notes           String?
+  draftPayload    Json?     @map("draft_payload")
   createdById     String?   @map("created_by_id")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
@@ -671,10 +685,12 @@ model GoodsReceipt {
   items         GoodsReceiptItem[]
   batches       InventoryBatch[]
   qcInspections QcInspection[]
+  supplierInvoiceRecord SupplierInvoice? @relation(fields: [supplierInvoiceId], references: [id])
 
   @@unique([companyId, number])
   @@index([companyId])
   @@index([status])
+  @@index([supplierInvoiceId])
   @@map("goods_receipts")
 }
 
@@ -782,11 +798,74 @@ model InventoryBatch {
   traceLinksTo   BatchTraceabilityLink[] @relation("TraceToBatch")
   serials        InventorySerial[]
   dispatchLines  DispatchLine[]
+  stockVerifications StockVerification[]
 
   @@unique([companyId, batchNumber])
   @@index([companyId, materialId])
   @@index([receivedAt])
   @@map("inventory_batches")
+}
+
+model StockVerification {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  batchId     String   @map("batch_id")
+  warehouseId String?  @map("warehouse_id")
+  locationId  String?  @map("location_id")
+  systemQty   Float    @map("system_qty")
+  countedQty  Float    @map("counted_qty")
+  variance    Float
+  notes       String?
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  batch   InventoryBatch @relation(fields: [batchId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@index([batchId])
+  @@map("stock_verifications")
+}
+
+model SupplierInvoice {
+  id                 String   @id @default(cuid())
+  companyId          String   @map("company_id")
+  invoiceNumber      String   @map("invoice_number")
+  amount             Float
+  taxAmount          Float    @default(0) @map("tax_amount")
+  verificationStatus String   @default("pending") @map("verification_status")
+  attachmentUrl      String?  @map("attachment_url")
+  verifiedAt         DateTime? @map("verified_at")
+  verifiedById       String?  @map("verified_by_id")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  company       Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  goodsReceipts GoodsReceipt[]
+  bookings      AccountsBooking[]
+
+  @@unique([companyId, invoiceNumber])
+  @@index([companyId, verificationStatus])
+  @@map("supplier_invoices")
+}
+
+model AccountsBooking {
+  id                String   @id @default(cuid())
+  companyId         String   @map("company_id")
+  supplierInvoiceId String   @map("supplier_invoice_id")
+  status            String   @default("booked")
+  debitLines        Json     @map("debit_lines")
+  creditLines       Json     @map("credit_lines")
+  bookedAt          DateTime @default(now()) @map("booked_at")
+  bookedById        String?  @map("booked_by_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  company         Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplierInvoice SupplierInvoice @relation(fields: [supplierInvoiceId], references: [id])
+
+  @@index([companyId, status])
+  @@index([supplierInvoiceId])
+  @@map("accounts_bookings")
 }
 
 model InventoryStock {

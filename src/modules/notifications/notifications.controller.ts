@@ -35,6 +35,12 @@ export class NotificationsController {
     });
   }
 
+  @Get('unread-count')
+  @RequirePermissions('auth.login')
+  unreadCount(@CurrentUser() user: AuthUser) {
+    return this.notifications.unreadCount(requireCompanyId(user), user.id);
+  }
+
   @Post('read-all')
   @RequirePermissions('auth.login')
   markAll(@CurrentUser() user: AuthUser) {
@@ -45,5 +51,11 @@ export class NotificationsController {
   @RequirePermissions('auth.login')
   markRead(@CurrentUser() user: AuthUser, @Param('id') id: string) {
     return this.notifications.markRead(requireCompanyId(user), user.id, id);
+  }
+
+  @Post(':id/unread')
+  @RequirePermissions('auth.login')
+  markUnread(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.notifications.markUnread(requireCompanyId(user), user.id, id);
   }
 }

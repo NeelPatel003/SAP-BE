@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsIn,
   IsNumber,
+  IsInt,
   IsOptional,
   IsString,
   MaxLength,
@@ -88,9 +89,17 @@ export class CreateMaterialDto {
   @IsNumber()
   @Min(0)
   gstPercent?: number;
+
+  @IsOptional() @IsString() @MaxLength(120) subcategory?: string;
+  @IsOptional() @IsString() @MaxLength(80) drawingNumber?: string;
+  @IsOptional() @IsString() @MaxLength(40) revision?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) leadTimeDays?: number;
+  @IsOptional() @IsString() preferredSupplierId?: string;
+  @IsOptional() @IsIn(['active', 'inactive']) status?: string;
 }
 
 export class UpdateMaterialDto {
+  @IsOptional() @IsString() @MaxLength(40) code?: string;
   @IsOptional()
   @IsString()
   @MaxLength(200)
@@ -126,6 +135,30 @@ export class UpdateMaterialDto {
   @IsString()
   @IsIn(['active', 'inactive'])
   status?: string;
+
+  @IsOptional() @IsString() categoryId?: string;
+  @IsOptional() @IsString() unitId?: string;
+  @IsOptional() @IsString() @MaxLength(120) subcategory?: string;
+  @IsOptional() @IsString() @MaxLength(20) hsn?: string | null;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) gstPercent?: number | null;
+  @IsOptional() @IsString() @MaxLength(80) drawingNumber?: string | null;
+  @IsOptional() @IsString() @MaxLength(40) revision?: string | null;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) reorderQty?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) safetyStock?: number;
+  @IsOptional() @IsString() defaultWarehouseId?: string | null;
+  @IsOptional() @IsString() defaultLocationId?: string | null;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) shelfLifeDays?: number | null;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) leadTimeDays?: number | null;
+  @IsOptional() @IsString() preferredSupplierId?: string | null;
+}
+
+export class CreateUnitDto {
+  @IsString() @MaxLength(20) code: string;
+  @IsString() @MaxLength(80) name: string;
+}
+
+export class UpdateUnitDto {
+  @IsOptional() @IsString() @MaxLength(80) name?: string;
 }
 
 export class GrnLineDto {
@@ -301,8 +334,14 @@ export class IssueLineDto {
   @IsString()
   materialId: string;
 
+  @IsOptional()
   @IsString()
-  batchId: string;
+  batchId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  barcode?: string;
 
   @Type(() => Number)
   @IsNumber()
@@ -422,8 +461,14 @@ export class TransferLineDto {
   @IsString()
   materialId: string;
 
+  @IsOptional()
   @IsString()
-  batchId: string;
+  batchId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  barcode?: string;
 
   @Type(() => Number)
   @IsNumber()
@@ -496,4 +541,12 @@ export class CreateReservationDto {
   @IsOptional()
   @IsString()
   warehouseId?: string;
+}
+
+export class StockVerificationDto {
+  @IsString() @MaxLength(200) code: string;
+  @Type(() => Number) @IsNumber() @Min(0) countedQty: number;
+  @IsOptional() @IsString() warehouseId?: string;
+  @IsOptional() @IsString() locationId?: string;
+  @IsOptional() @IsString() @MaxLength(500) notes?: string;
 }

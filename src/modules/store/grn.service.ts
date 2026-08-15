@@ -18,6 +18,7 @@ import {
   resolveLineQcRequired,
   resolveWorkflow,
 } from '../../common/workflow/company-workflow';
+import { AuditService } from '../audit/audit.service';
 
 type Tx = Prisma.TransactionClient;
 
@@ -35,6 +36,21 @@ type GrnLineIn = {
   heatNumber?: string;
 };
 
+type GrnInput = {
+  purchaseOrderId?: string;
+  supplierId?: string;
+  warehouseId: string;
+  locationId?: string;
+  supplierInvoice?: string;
+  supplierChallan?: string;
+  vehicleNumber?: string;
+  transport?: string;
+  receivingPerson?: string;
+  receiveDate?: string;
+  allowOverReceive?: boolean;
+  lines: GrnLineIn[];
+};
+
 @Injectable()
 export class GrnService {
   constructor(
@@ -43,6 +59,7 @@ export class GrnService {
     private readonly stock: StockEngine,
     private readonly locations: LocationEngine,
     private readonly series: DocumentSeriesService,
+    private readonly audit: AuditService,
   ) {}
 
   private async nextGrnNumber(
@@ -103,20 +120,8 @@ export class GrnService {
     companyId: string,
     userId: string,
     userPermissions: string[],
-    dto: {
-      purchaseOrderId?: string;
-      supplierId?: string;
-      warehouseId: string;
-      locationId?: string;
-      supplierInvoice?: string;
-      supplierChallan?: string;
-      vehicleNumber?: string;
-      transport?: string;
-      receivingPerson?: string;
-      receiveDate?: string;
-      allowOverReceive?: boolean;
-      lines: GrnLineIn[];
-    },
+    dto: GrnInput,
+    draftId?: string,
   ) {
     const workflow = await this.loadWorkflow(companyId);
 
@@ -156,7 +161,22 @@ export class GrnService {
           'Purchase order is required by company workflow policy',
         );
       }
-      return this.createFromPo(companyId, userId, dto, workflow);
+      const result = await this.createFromPo(
+        companyId,
+        userId,
+        dto,
+        workflow,
+        draftId,
+      );
+      await this.audit.writeActivity({
+        companyId,
+        userId,
+        action: 'store.grn.posted',
+        entityType: 'goods_receipt',
+        entityId: result.id,
+        meta: { number: result.number, status: result.status },
+      });
+      return result;
     }
 
     // Ad-hoc GRN (no PO)
@@ -165,7 +185,76 @@ export class GrnService {
         'supplierId required when creating GRN without a purchase order',
       );
     }
-    return this.createAdHoc(companyId, userId, dto, workflow);
+    const result = await this.createAdHoc(
+      companyId,
+      userId,
+      dto,
+      workflow,
+      draftId,
+    );
+    await this.audit.writeActivity({
+      companyId,
+      userId,
+      action: 'store.grn.posted',
+      entityType: 'goods_receipt',
+      entityId: result.id,
+      meta: { number: result.number, status: result.status },
+    });
+    return result;
+  }
+
+  async createDraft(companyId: string, userId: string, dto: GrnInput) {
+    const workflow = await this.loadWorkflow(companyId);
+    let supplierId = dto.supplierId;
+    if (dto.purchaseOrderId) {
+      const po = await this.prisma.purchaseOrder.findFirst({
+        where: { id: dto.purchaseOrderId, companyId },
+      });
+      if (!po) throw new NotFoundException('Purchase order not found');
+      supplierId = po.supplierId;
+    }
+    if (workflow.grnRequiresPurchaseOrder && !dto.purchaseOrderId) {
+      throw new BadRequestException('Purchase order is required by company workflow policy');
+    }
+    if (!supplierId) throw new BadRequestException('Supplier required');
+    await this.locations.assertWarehouse(companyId, dto.warehouseId);
+    const number = await this.nextGrnNumber(companyId, this.prisma);
+    return this.prisma.goodsReceipt.create({
+      data: {
+        companyId,
+        number,
+        purchaseOrderId: dto.purchaseOrderId,
+        supplierId,
+        status: 'draft',
+        receiveDate: dto.receiveDate ? new Date(dto.receiveDate) : new Date(),
+        supplierInvoice: dto.supplierInvoice,
+        supplierChallan: dto.supplierChallan,
+        vehicleNumber: dto.vehicleNumber,
+        transport: dto.transport,
+        receivingPerson: dto.receivingPerson,
+        createdById: userId,
+        draftPayload: JSON.parse(JSON.stringify(dto)) as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  async postDraft(
+    companyId: string,
+    userId: string,
+    userPermissions: string[],
+    id: string,
+  ) {
+    const draft = await this.prisma.goodsReceipt.findFirst({
+      where: { id, companyId, status: 'draft' },
+    });
+    if (!draft?.draftPayload) throw new NotFoundException('GRN draft not found');
+    return this.createAndPost(
+      companyId,
+      userId,
+      userPermissions,
+      draft.draftPayload as unknown as GrnInput,
+      id,
+    );
   }
 
   private async createFromPo(
@@ -185,6 +274,7 @@ export class GrnService {
       lines: GrnLineIn[];
     },
     workflow: ReturnType<typeof resolveWorkflow>,
+    draftId?: string,
   ) {
     const po = await this.prisma.purchaseOrder.findFirst({
       where: { id: dto.purchaseOrderId, companyId },
@@ -196,13 +286,12 @@ export class GrnService {
       const number = await this.nextGrnNumber(companyId, tx);
       let anyQc = false;
 
-      const grn = await tx.goodsReceipt.create({
-        data: {
+      const grnData = {
           companyId,
           number,
           purchaseOrderId: po.id,
           supplierId: po.supplierId,
-          status: 'draft',
+          status: 'draft' as const,
           receiveDate: dto.receiveDate
             ? new Date(dto.receiveDate)
             : new Date(),
@@ -212,8 +301,13 @@ export class GrnService {
           transport: dto.transport,
           receivingPerson: dto.receivingPerson,
           createdById: userId,
-        },
-      });
+      };
+      const grn = draftId
+        ? await tx.goodsReceipt.update({
+            where: { id: draftId },
+            data: { ...grnData, draftPayload: Prisma.JsonNull },
+          })
+        : await tx.goodsReceipt.create({ data: grnData });
 
       for (const line of dto.lines) {
         if (!line.purchaseOrderItemId) {
@@ -387,6 +481,7 @@ export class GrnService {
       lines: GrnLineIn[];
     },
     workflow: ReturnType<typeof resolveWorkflow>,
+    draftId?: string,
   ) {
     const supplier = await this.prisma.supplier.findFirst({
       where: { id: dto.supplierId, companyId },
@@ -397,13 +492,12 @@ export class GrnService {
       const number = await this.nextGrnNumber(companyId, tx);
       let anyQc = false;
 
-      const grn = await tx.goodsReceipt.create({
-        data: {
+      const grnData = {
           companyId,
           number,
           purchaseOrderId: null,
           supplierId: supplier.id,
-          status: 'draft',
+          status: 'draft' as const,
           receiveDate: dto.receiveDate
             ? new Date(dto.receiveDate)
             : new Date(),
@@ -413,8 +507,13 @@ export class GrnService {
           transport: dto.transport,
           receivingPerson: dto.receivingPerson,
           createdById: userId,
-        },
-      });
+      };
+      const grn = draftId
+        ? await tx.goodsReceipt.update({
+            where: { id: draftId },
+            data: { ...grnData, draftPayload: Prisma.JsonNull },
+          })
+        : await tx.goodsReceipt.create({ data: grnData });
 
       for (const line of dto.lines) {
         if (!line.materialId) {
@@ -628,7 +727,7 @@ export class GrnService {
 
     const workflow = await this.loadWorkflow(companyId);
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const number = await this.series.next(companyId, 'qc_inspection', tx);
 
       const inspection = await tx.qcInspection.create({
@@ -812,5 +911,16 @@ export class GrnService {
         },
       });
     });
+
+    await this.audit.writeActivity({
+      companyId,
+      userId,
+      action: 'store.qc.applied',
+      entityType: 'goods_receipt',
+      entityId: result.id,
+      meta: { number: result.number, status: result.status },
+    });
+
+    return result;
   }
 }

@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   HttpException,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -15,6 +16,14 @@ import { LoginDto } from './dto/auth.dto';
 
 const LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_FAIL_MAX = 8;
+const MAX_ACTIVE_REFRESH_TOKENS = 20;
+const REFRESH_GRACE_MS = 30_000;
+
+type SessionMeta = {
+  ip?: string | null;
+  userAgent?: string | null;
+  label?: string | null;
+};
 
 @Injectable()
 export class AuthService {
@@ -64,9 +73,9 @@ export class AuthService {
     }
   }
 
-  async login(dto: LoginDto, ip?: string | null) {
+  async login(dto: LoginDto, meta: SessionMeta = {}) {
     const email = dto.email.toLowerCase();
-    await this.assertNotLockedOut(email, ip);
+    await this.assertNotLockedOut(email, meta.ip);
 
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -89,7 +98,7 @@ export class AuthService {
         event: 'login_failed',
         success: false,
         message: 'Unknown email',
-        ip,
+        ip: meta.ip,
         meta: { email },
       });
       throw new UnauthorizedException('Invalid email or password');
@@ -102,7 +111,7 @@ export class AuthService {
         message: 'User inactive',
         userId: user.id,
         companyId: user.companyId,
-        ip,
+        ip: meta.ip,
         meta: { email },
       });
       throw new ForbiddenException('Account is not active');
@@ -115,7 +124,7 @@ export class AuthService {
         message: 'Company suspended',
         userId: user.id,
         companyId: user.companyId,
-        ip,
+        ip: meta.ip,
         meta: { email },
       });
       throw new ForbiddenException('Company is suspended');
@@ -129,13 +138,18 @@ export class AuthService {
         message: 'Bad password',
         userId: user.id,
         companyId: user.companyId,
-        ip,
+        ip: meta.ip,
         meta: { email },
       });
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    const tokens = await this.issueTokens(user.id, user.email);
+    await this.pruneTokens(user.id);
+
+    const tokens = await this.issueTokens(user.id, user.email, {
+      ...meta,
+      familyId: crypto.randomUUID(),
+    });
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -147,7 +161,7 @@ export class AuthService {
       success: true,
       userId: user.id,
       companyId: user.companyId,
-      ip,
+      ip: meta.ip,
       meta: { email },
     });
 
@@ -157,7 +171,7 @@ export class AuthService {
       entityId: user.id,
       userId: user.id,
       companyId: user.companyId,
-      ip,
+      ip: meta.ip,
     });
 
     return {
@@ -166,14 +180,13 @@ export class AuthService {
     };
   }
 
-  async refresh(refreshToken: string) {
+  async refresh(refreshToken: string, meta: SessionMeta = {}) {
+    if (!refreshToken) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
     const tokenHash = this.hashToken(refreshToken);
     const stored = await this.prisma.refreshToken.findFirst({
-      where: {
-        tokenHash,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+      where: { tokenHash },
       include: { user: true },
     });
 
@@ -181,34 +194,80 @@ export class AuthService {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
-      data: { revokedAt: new Date() },
-    });
-
-    return this.issueTokens(stored.user.id, stored.user.email);
-  }
-
-  async logout(userId: string, refreshToken?: string) {
-    if (refreshToken) {
-      const tokenHash = this.hashToken(refreshToken);
-      await this.prisma.refreshToken.updateMany({
-        where: { userId, tokenHash, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-    } else {
-      await this.prisma.refreshToken.updateMany({
-        where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
+    // Grace: concurrent tabs reused an already-rotated token — rotate from family tip
+    if (stored.revokedAt && stored.familyId) {
+      const age = Date.now() - stored.revokedAt.getTime();
+      if (age <= REFRESH_GRACE_MS) {
+        const tip = await this.prisma.refreshToken.findFirst({
+          where: {
+            familyId: stored.familyId,
+            revokedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          include: { user: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (tip && tip.user.status === 'active') {
+          return this.rotateFromStored(tip, meta);
+        }
+      }
+      throw new UnauthorizedException('Invalid refresh token');
     }
 
+    if (stored.revokedAt || stored.expiresAt <= new Date()) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    return this.rotateFromStored(stored, meta);
+  }
+
+  private async rotateFromStored(
+    stored: {
+      id: string;
+      userId: string;
+      familyId: string;
+      user: { id: string; email: string; status: string };
+    },
+    meta: SessionMeta,
+  ) {
+    const tokens = await this.issueTokens(stored.user.id, stored.user.email, {
+      ...meta,
+      familyId: stored.familyId,
+    });
+
+    await this.prisma.refreshToken.update({
+      where: { id: stored.id },
+      data: {
+        revokedAt: new Date(),
+        replacedById: tokens.refreshTokenId,
+      },
+    });
+
+    return {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      tokenType: tokens.tokenType,
+    };
+  }
+
+  /** Logout current session only (requires refresh token). */
+  async logoutCurrent(refreshToken?: string) {
+    if (!refreshToken) {
+      return { success: true };
+    }
+    return this.logoutByRefreshToken(refreshToken);
+  }
+
+  async logoutAll(userId: string) {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
     await this.audit.writeAudit({
-      event: 'logout',
+      event: 'logout_all',
       success: true,
       userId,
     });
-
     return { success: true };
   }
 
@@ -229,6 +288,42 @@ export class AuthService {
         userId: stored.userId,
       });
     }
+    return { success: true };
+  }
+
+  async listSessions(userId: string, currentRefreshToken?: string) {
+    const currentHash = currentRefreshToken
+      ? this.hashToken(currentRefreshToken)
+      : null;
+    const rows = await this.prisma.refreshToken.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      expiresAt: r.expiresAt,
+      ip: r.ip,
+      userAgent: r.userAgent,
+      label: r.label,
+      current: currentHash ? r.tokenHash === currentHash : false,
+    }));
+  }
+
+  async revokeSession(userId: string, sessionId: string) {
+    const row = await this.prisma.refreshToken.findFirst({
+      where: { id: sessionId, userId, revokedAt: null },
+    });
+    if (!row) throw new NotFoundException('Session not found');
+    await this.prisma.refreshToken.update({
+      where: { id: row.id },
+      data: { revokedAt: new Date() },
+    });
     return { success: true };
   }
 
@@ -256,7 +351,42 @@ export class AuthService {
     return this.serializeUser(user);
   }
 
-  private async issueTokens(userId: string, email: string) {
+  private async pruneTokens(userId: string) {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    await this.prisma.refreshToken.deleteMany({
+      where: {
+        userId,
+        OR: [
+          { expiresAt: { lt: new Date() } },
+          { revokedAt: { not: null, lt: cutoff } },
+        ],
+      },
+    });
+
+    const active = await this.prisma.refreshToken.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+    const overflow = active.length - (MAX_ACTIVE_REFRESH_TOKENS - 1);
+    if (overflow > 0) {
+      const toRevoke = active.slice(0, overflow).map((r) => r.id);
+      await this.prisma.refreshToken.updateMany({
+        where: { id: { in: toRevoke } },
+        data: { revokedAt: new Date() },
+      });
+    }
+  }
+
+  private async issueTokens(
+    userId: string,
+    email: string,
+    opts: SessionMeta & { familyId: string },
+  ) {
     const payload = { sub: userId, email };
     const accessToken = await this.jwt.signAsync(payload, {
       secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
@@ -270,20 +400,39 @@ export class AuthService {
     const refreshToken = crypto.randomBytes(48).toString('hex');
     const expiresIn = this.config.get<string>('JWT_REFRESH_EXPIRES') || '7d';
     const expiresAt = this.parseExpiry(expiresIn);
+    const label =
+      opts.label ||
+      this.guessLabel(opts.userAgent) ||
+      null;
 
-    await this.prisma.refreshToken.create({
+    const created = await this.prisma.refreshToken.create({
       data: {
         userId,
         tokenHash: this.hashToken(refreshToken),
         expiresAt,
+        familyId: opts.familyId,
+        userAgent: opts.userAgent?.slice(0, 512) || null,
+        ip: opts.ip?.slice(0, 64) || null,
+        label,
       },
     });
 
     return {
       accessToken,
       refreshToken,
-      tokenType: 'Bearer',
+      refreshTokenId: created.id,
+      tokenType: 'Bearer' as const,
     };
+  }
+
+  private guessLabel(ua?: string | null) {
+    if (!ua) return null;
+    const lower = ua.toLowerCase();
+    if (lower.includes('iphone') || lower.includes('android')) return 'Mobile';
+    if (lower.includes('ipad') || lower.includes('tablet')) return 'Tablet';
+    if (lower.includes('macintosh') || lower.includes('windows') || lower.includes('linux'))
+      return 'Desktop';
+    return 'Browser';
   }
 
   private hashToken(token: string) {
@@ -317,11 +466,11 @@ export class AuthService {
       status: string;
       companyId: string | null;
       lastLoginAt: Date | null;
-      company: { 
-        id: string; 
-        name: string; 
-        slug: string; 
-        status: string; 
+      company: {
+        id: string;
+        name: string;
+        slug: string;
+        status: string;
         enabledModules?: unknown;
         displayName?: string | null;
         logoUrl?: string | null;

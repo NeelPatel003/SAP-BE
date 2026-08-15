@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Injectable,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   resolveBilling,
@@ -14,7 +15,10 @@ export type UsageFeature = 'ai.chat' | 'report.pdf' | 'email.send' | string;
 
 @Injectable()
 export class UsageMeterService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   async getBilling(companyId: string): Promise<CompanyBillingSettings> {
     const company = await this.prisma.company.findUnique({
@@ -27,6 +31,35 @@ export class UsageMeterService {
   private monthStart() {
     const d = new Date();
     return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  }
+
+  private dayStartUtc() {
+    const d = new Date();
+    return new Date(
+      Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
+    );
+  }
+
+  dailyAiCallLimit() {
+    const raw = this.config.get<string>('AI_DAILY_CALL_LIMIT');
+    const n = raw ? parseInt(raw, 10) : 25;
+    return Number.isFinite(n) && n > 0 ? n : 25;
+  }
+
+  async countAiCallsToday(companyId: string) {
+    return this.prisma.featureUsageEvent.count({
+      where: {
+        companyId,
+        feature: { startsWith: 'ai.' },
+        createdAt: { gte: this.dayStartUtc() },
+      },
+    });
+  }
+
+  async remainingAiCallsToday(companyId: string) {
+    const limit = this.dailyAiCallLimit();
+    const used = await this.countAiCallsToday(companyId);
+    return Math.max(0, limit - used);
   }
 
   async sumUnits(
@@ -59,6 +92,14 @@ export class UsageMeterService {
     if (feature.startsWith('ai.')) {
       if (!billing.aiEnabled) {
         throw new ForbiddenException('AI is disabled for this company');
+      }
+      const dailyLimit = this.dailyAiCallLimit();
+      const callsToday = await this.countAiCallsToday(companyId);
+      if (callsToday >= dailyLimit) {
+        throw new HttpException(
+          `Daily AI call limit reached (${dailyLimit}/day). Try again tomorrow.`,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
       }
       const used = await this.sumUnits(companyId, 'ai.', 'total');
       if (used + projectedUnits > billing.monthlyAiTokenCap) {
@@ -161,6 +202,8 @@ export class UsageMeterService {
     const billing = await this.getBilling(companyId);
     const aiUsed = await this.sumUnits(companyId, 'ai.', 'total');
     const emailUsed = await this.sumUnits(companyId, 'email.', 'total');
+    const aiCallsToday = await this.countAiCallsToday(companyId);
+    const dailyLimit = this.dailyAiCallLimit();
 
     return {
       items,
@@ -178,6 +221,11 @@ export class UsageMeterService {
       monthToDate: {
         aiTokens: aiUsed,
         emails: emailUsed,
+      },
+      today: {
+        aiCalls: aiCallsToday,
+        aiCallLimit: dailyLimit,
+        aiCallsRemaining: Math.max(0, dailyLimit - aiCallsToday),
       },
     };
   }

@@ -10,12 +10,20 @@ import {
   PaginationQueryDto,
 } from '../../common/dto/pagination.dto';
 import { DocumentSeriesService } from '../company-settings/document-series.service';
+import { BatchEngine } from '../store/engines/batch.engine';
+import { StockEngine } from '../store/engines/stock.engine';
+import { FifoEngine } from '../store/engines/fifo.engine';
+import { ReservationEngine } from '../store/engines/reservation.engine';
 
 @Injectable()
 export class ProductionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly series: DocumentSeriesService,
+    private readonly batches: BatchEngine,
+    private readonly stock: StockEngine,
+    private readonly fifo: FifoEngine,
+    private readonly reservations: ReservationEngine,
   ) {}
 
   async listOrders(companyId: string, q: PaginationQueryDto & { status?: string }) {
@@ -162,7 +170,7 @@ export class ProductionService {
     }
 
     const number = await this.nextRequestNumber(companyId);
-    return this.prisma.materialRequest.create({
+    const request = await this.prisma.materialRequest.create({
       data: {
         companyId,
         number,
@@ -182,6 +190,122 @@ export class ProductionService {
         productionOrder: true,
         lines: { include: { material: true } },
       },
+    });
+
+    let poPriority: number | undefined;
+    let poRequiredDate: Date | null | undefined;
+    if (body.productionOrderId) {
+      const po = await this.prisma.productionOrder.findFirst({
+        where: { id: body.productionOrderId, companyId },
+      });
+      poPriority = po?.priority;
+      poRequiredDate = po?.requiredDate;
+    }
+
+    for (const line of request.lines) {
+      const suggestion = await this.fifo.suggestBatches(
+        companyId,
+        line.materialId,
+        line.requestedQty,
+      );
+      if (!suggestion.fullyCovered) continue;
+      for (const pick of suggestion.picks) {
+        await this.reservations.create({
+          companyId,
+          materialId: line.materialId,
+          quantity: pick.quantity,
+          productionOrderId: body.productionOrderId,
+          batchId: pick.batchId,
+          warehouseId: pick.warehouseId,
+          priority: poPriority,
+          productionDate: poRequiredDate ?? undefined,
+          notes: `Auto-reserved for ${request.number}`,
+        });
+      }
+    }
+
+    return request;
+  }
+
+  /**
+   * Receive finished goods from a production order into available stock
+   * and link issue→production→FG→dispatch chain via production_to_fg.
+   */
+  async receiveFg(
+    companyId: string,
+    userId: string,
+    body: {
+      productionOrderId: string;
+      materialId: string;
+      warehouseId: string;
+      quantity: number;
+      locationId?: string;
+      expiryDate?: string;
+    },
+  ) {
+    if (!(body.quantity > 0)) {
+      throw new BadRequestException('quantity must be positive');
+    }
+    const [po, material] = await Promise.all([
+      this.prisma.productionOrder.findFirst({
+        where: { id: body.productionOrderId, companyId },
+      }),
+      this.prisma.material.findFirst({
+        where: { id: body.materialId, companyId },
+      }),
+    ]);
+    if (!po) throw new NotFoundException('Production order not found');
+    if (!material) throw new NotFoundException('Material not found');
+
+    return this.prisma.$transaction(async (tx) => {
+      const batchNumber = await this.batches.nextBatchNumber(companyId, undefined, tx);
+      const barcode = this.batches.barcodePayload(batchNumber, material.code);
+      const batch = await tx.inventoryBatch.create({
+        data: {
+          companyId,
+          materialId: material.id,
+          batchNumber,
+          barcode,
+          qrPayload: barcode,
+          receivedAt: new Date(),
+          expiryDate: body.expiryDate ? new Date(body.expiryDate) : null,
+        },
+      });
+
+      await this.stock.add(
+        {
+          companyId,
+          materialId: material.id,
+          batchId: batch.id,
+          warehouseId: body.warehouseId,
+          locationId: body.locationId,
+          status: 'available',
+        },
+        body.quantity,
+        {
+          transactionType: 'fg_receipt',
+          referenceType: 'production_order',
+          referenceId: po.id,
+          createdById: userId,
+        },
+        tx,
+      );
+
+      await tx.batchTraceabilityLink.create({
+        data: {
+          companyId,
+          linkType: 'production_to_fg',
+          toBatchId: batch.id,
+          referenceType: 'production_order',
+          referenceId: po.id,
+          meta: { quantity: body.quantity, materialId: material.id },
+        },
+      });
+
+      return tx.inventoryBatch.findUnique({
+        where: { id: batch.id },
+        include: { material: true, stocks: true },
+      });
     });
   }
 }

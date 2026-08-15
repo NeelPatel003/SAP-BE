@@ -138,4 +138,21 @@ export class ProductionController {
   ) {
     return this.boms.explode(requireCompanyId(user), id, user.id, body);
   }
+
+  @Post('fg-receipt')
+  @RequirePermissions('production.orders.write')
+  receiveFg(
+    @CurrentUser() user: AuthUser,
+    @Body()
+    body: {
+      productionOrderId: string;
+      materialId: string;
+      warehouseId: string;
+      quantity: number;
+      locationId?: string;
+      expiryDate?: string;
+    },
+  ) {
+    return this.production.receiveFg(requireCompanyId(user), user.id, body);
+  }
 }

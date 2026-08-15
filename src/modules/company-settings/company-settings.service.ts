@@ -24,6 +24,7 @@ import {
   DEFAULT_WORKFLOW,
   parseSettingsBlob,
   resolveBilling,
+  resolveStorePolicy,
   resolveWorkflow,
 } from '../../common/workflow/company-workflow';
 
@@ -71,6 +72,7 @@ export class CompanySettingsService {
     const blob = parseSettingsBlob(company.settings);
     const workflow = resolveWorkflow(company.settings);
     const billing = resolveBilling(company.settings);
+    const storePolicy = resolveStorePolicy(company.settings);
 
     return {
       id: company.id,
@@ -93,6 +95,7 @@ export class CompanySettingsService {
         defaultQcRequired: blob.defaultQcRequired ?? true,
         layoutDensity:
           blob.layoutDensity === 'compact' ? 'compact' : 'comfortable',
+        ...storePolicy,
       },
       workflow,
       billing,
@@ -135,6 +138,21 @@ export class CompanySettingsService {
       }
       if (typeof storePatch.defaultQcRequired === 'boolean') {
         blob.defaultQcRequired = storePatch.defaultQcRequired;
+      }
+      if (storePatch.agingBands !== undefined) {
+        blob.agingBands = [...new Set(storePatch.agingBands)].sort((a, b) => a - b);
+      }
+      if (storePatch.nearExpiryDays !== undefined) {
+        blob.nearExpiryDays = storePatch.nearExpiryDays;
+      }
+      if (storePatch.deadStockDays !== undefined) {
+        blob.deadStockDays = storePatch.deadStockDays;
+      }
+      if (storePatch.slowStockDays !== undefined) {
+        blob.slowStockDays = storePatch.slowStockDays;
+      }
+      if (storePatch.fefoEnabled !== undefined) {
+        blob.fefoEnabled = storePatch.fefoEnabled;
       }
     }
 

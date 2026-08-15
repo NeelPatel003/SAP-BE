@@ -1,6 +1,8 @@
 import {
   Body,
+  BadRequestException,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -44,7 +46,10 @@ import {
   CreateReturnDto,
   CreateSerialsDto,
   CreateTransferDto,
+  CreateUnitDto,
+  UpdateUnitDto,
   UpdateMaterialDto,
+  StockVerificationDto,
 } from './dto/store.dto';
 
 @ApiTags('store')
@@ -74,6 +79,18 @@ export class StoreController {
     return this.masters.listUnits();
   }
 
+  @Post('units')
+  @RequirePermissions('store.masters.write')
+  createUnit(@Body() body: CreateUnitDto) {
+    return this.masters.createUnit(body);
+  }
+
+  @Patch('units/:id')
+  @RequirePermissions('store.masters.write')
+  updateUnit(@Param('id') id: string, @Body() body: UpdateUnitDto) {
+    return this.masters.updateUnit(id, body);
+  }
+
   @Get('categories')
   @RequirePermissions('store.masters.read')
   categories(@CurrentUser() user: AuthUser, @Query() q: PaginationQueryDto) {
@@ -99,6 +116,12 @@ export class StoreController {
   @RequirePermissions('store.masters.write')
   createMaterial(@CurrentUser() user: AuthUser, @Body() body: CreateMaterialDto) {
     return this.masters.createMaterial(requireCompanyId(user), body);
+  }
+
+  @Get('materials/:id')
+  @RequirePermissions('store.masters.read')
+  material(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.masters.getMaterial(requireCompanyId(user), id);
   }
 
   @Patch('materials/:id')
@@ -183,7 +206,7 @@ export class StoreController {
   }
 
   @Post('grn')
-  @RequirePermissions('store.grn.create')
+  @RequirePermissions('store.grn.create', 'store.grn.post')
   async createGrn(@CurrentUser() user: AuthUser, @Body() body: CreateGrnDto) {
     const companyId = requireCompanyId(user);
     const result = await this.grn.createAndPost(
@@ -192,6 +215,35 @@ export class StoreController {
       user.permissions || [],
       body,
     );
+    await this.notifyGrnPosted(companyId, user.id, result);
+    return result;
+  }
+
+  @Post('grn/draft')
+  @RequirePermissions('store.grn.create')
+  createGrnDraft(@CurrentUser() user: AuthUser, @Body() body: CreateGrnDto) {
+    return this.grn.createDraft(requireCompanyId(user), user.id, body);
+  }
+
+  @Post('grn/:id/post')
+  @RequirePermissions('store.grn.post')
+  async postGrnDraft(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    const companyId = requireCompanyId(user);
+    const result = await this.grn.postDraft(
+      companyId,
+      user.id,
+      user.permissions || [],
+      id,
+    );
+    await this.notifyGrnPosted(companyId, user.id, result);
+    return result;
+  }
+
+  private async notifyGrnPosted(
+    companyId: string,
+    actorUserId: string,
+    result: { id: string; number: string; status: string },
+  ) {
     try {
       await this.notifications.notifyCompanyUsersWithPermission(
         companyId,
@@ -204,7 +256,30 @@ export class StoreController {
           meta: { grnId: result.id },
         },
       );
-      // Email notified users with store.grn.read when entitlement allows
+      if (result.status === 'pending_qc') {
+        await this.notifications.notifyCompanyUsersWithPermission(
+          companyId,
+          'qc.queue.read',
+          {
+            type: 'grn.pending_qc',
+            title: `GRN ${result.number} awaiting QC`,
+            body: 'Goods receipt is on quality hold',
+            link: `/dashboard/qc?grnId=${result.id}`,
+            meta: { grnId: result.id },
+          },
+        );
+        await this.notifications.notifyCompanyUsersWithPermission(
+          companyId,
+          'qc.inspect',
+          {
+            type: 'grn.pending_qc',
+            title: `GRN ${result.number} awaiting QC`,
+            body: 'Goods receipt is on quality hold',
+            link: `/dashboard/qc?grnId=${result.id}`,
+            meta: { grnId: result.id },
+          },
+        );
+      }
       const readers = await this.prisma.user.findMany({
         where: {
           companyId,
@@ -226,7 +301,7 @@ export class StoreController {
         try {
           await this.email.send({
             companyId,
-            userId: user.id,
+            userId: actorUserId,
             to: u.email,
             subject: `GRN ${result.number} posted`,
             body: `Goods receipt ${result.number} was posted (status ${result.status}).`,
@@ -238,7 +313,6 @@ export class StoreController {
     } catch {
       // non-blocking side effects
     }
-    return result;
   }
 
   @Get('labels/batches')
@@ -338,6 +412,41 @@ export class StoreController {
   }
 
   // --- stock ---
+  @Get('batches/by-barcode')
+  @RequirePermissions('store.stock.read')
+  batchByBarcode(
+    @CurrentUser() user: AuthUser,
+    @Query('code') code: string,
+  ) {
+    return this.query.findBatchByBarcode(requireCompanyId(user), code);
+  }
+
+  @Get('verification')
+  verificationHistory(@CurrentUser() user: AuthUser) {
+    if (
+      !user.permissions.some((p) =>
+        ['store.stock.read', 'store.reports.read'].includes(p),
+      )
+    ) {
+      throw new ForbiddenException('Stock or report read permission required');
+    }
+    return this.query.verificationHistory(requireCompanyId(user));
+  }
+
+  @Post('verification')
+  verifyStock(
+    @CurrentUser() user: AuthUser,
+    @Body() body: StockVerificationDto,
+  ) {
+    if (
+      !user.permissions.some((p) =>
+        ['store.stock.read', 'store.reports.read'].includes(p),
+      )
+    ) {
+      throw new ForbiddenException('Stock or report read permission required');
+    }
+    return this.query.verifyStock(requireCompanyId(user), user.id, body);
+  }
   @Get('dashboard')
   @RequirePermissions('store.dashboard.read')
   dashboard(@CurrentUser() user: AuthUser) {
@@ -439,6 +548,22 @@ export class StoreController {
     return this.query.getAging(requireCompanyId(user));
   }
 
+  @Get('reports/:kind.csv')
+  @RequirePermissions('store.reports.read')
+  async extendedReportCsv(
+    @CurrentUser() user: AuthUser,
+    @Param('kind') kind: string,
+    @Res() res: Response,
+  ) {
+    const csv = await this.query.reportCsv(requireCompanyId(user), kind);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=${kind.replace(/[^a-z0-9-]/gi, '')}.csv`,
+    );
+    res.send(csv);
+  }
+
   @Get('fifo/suggest')
   @RequirePermissions('store.stock.read')
   fifoSuggest(
@@ -446,12 +571,14 @@ export class StoreController {
     @Query('materialId') materialId: string,
     @Query('quantity') quantity: string,
     @Query('warehouseId') warehouseId?: string,
+    @Query('status') status?: string,
   ) {
     return this.issues.suggestFifo(
       requireCompanyId(user),
       materialId,
       parseFloat(quantity),
       warehouseId,
+      status,
     );
   }
 
@@ -464,12 +591,27 @@ export class StoreController {
 
   @Post('issues')
   @RequirePermissions('store.issue.create')
-  createIssue(@CurrentUser() user: AuthUser, @Body() body: CreateIssueDto) {
+  async createIssue(@CurrentUser() user: AuthUser, @Body() body: CreateIssueDto) {
+    const companyId = requireCompanyId(user);
+    const lines = await Promise.all(
+      body.lines.map(async (line) => {
+        if (line.batchId) return { ...line, batchId: line.batchId };
+        if (!line.barcode) {
+          throw new BadRequestException('batchId or barcode required');
+        }
+        const batch = await this.query.findBatchByBarcode(companyId, line.barcode);
+        if (!batch) throw new BadRequestException(`Batch not found: ${line.barcode}`);
+        if (batch.materialId !== line.materialId) {
+          throw new BadRequestException('Scanned batch does not match material');
+        }
+        return { ...line, batchId: batch.id };
+      }),
+    );
     return this.issues.createIssue(
-      requireCompanyId(user),
+      companyId,
       user.id,
       user.permissions,
-      body,
+      { ...body, lines },
     );
   }
 
@@ -516,11 +658,24 @@ export class StoreController {
 
   @Post('transfers')
   @RequirePermissions('store.transfer.create')
-  createTransfer(
+  async createTransfer(
     @CurrentUser() user: AuthUser,
     @Body() body: CreateTransferDto,
   ) {
-    return this.issues.createTransfer(requireCompanyId(user), user.id, body);
+    const companyId = requireCompanyId(user);
+    const lines = await Promise.all(
+      body.lines.map(async (line) => {
+        if (line.batchId) return { ...line, batchId: line.batchId };
+        if (!line.barcode) throw new BadRequestException('batchId or barcode required');
+        const batch = await this.query.findBatchByBarcode(companyId, line.barcode);
+        if (!batch) throw new BadRequestException(`Batch not found: ${line.barcode}`);
+        if (batch.materialId !== line.materialId) {
+          throw new BadRequestException('Scanned batch does not match material');
+        }
+        return { ...line, batchId: batch.id };
+      }),
+    );
+    return this.issues.createTransfer(companyId, user.id, { ...body, lines });
   }
 
   // --- reservations ---

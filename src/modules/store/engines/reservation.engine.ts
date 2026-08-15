@@ -7,12 +7,15 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { StockEngine } from './stock.engine';
 import { FifoEngine } from './fifo.engine';
 
+import { AuditService } from '../../audit/audit.service';
+
 @Injectable()
 export class ReservationEngine {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stock: StockEngine,
     private readonly fifo: FifoEngine,
+    private readonly audit: AuditService,
   ) {}
 
   async create(params: {
@@ -70,7 +73,7 @@ export class ReservationEngine {
       locationId = stock.locationId;
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       await this.stock.move(
         {
           companyId: params.companyId,
@@ -104,6 +107,20 @@ export class ReservationEngine {
         },
       });
     });
+
+    await this.audit.writeActivity({
+      companyId: params.companyId,
+      action: 'store.reservation.created',
+      entityType: 'planning_reservation',
+      entityId: created.id,
+      meta: {
+        materialId: params.materialId,
+        quantity: params.quantity,
+        productionOrderId: params.productionOrderId,
+      },
+    });
+
+    return created;
   }
 
   async release(companyId: string, id: string) {
@@ -127,7 +144,7 @@ export class ReservationEngine {
       throw new BadRequestException('Reserved stock not found');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       await this.stock.move(
         {
           companyId,
@@ -151,10 +168,108 @@ export class ReservationEngine {
         },
         tx,
       );
-      return tx.planningReservation.update({
+      await tx.planningReservation.update({
         where: { id: res.id },
         data: { status: 'released' },
       });
     });
+
+    await this.audit.writeActivity({
+      companyId,
+      action: 'store.reservation.released',
+      entityType: 'planning_reservation',
+      entityId: res.id,
+      meta: { materialId: res.materialId, quantity: res.quantity },
+    });
+
+    return { id: res.id, status: 'released' };
+  }
+
+  /**
+   * Consume reserved stock for an issue line.
+   * Deducts from `reserved` and marks matching active reservation(s) consumed/reduced.
+   */
+  async consumeForIssue(
+    tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],
+    params: {
+      companyId: string;
+      materialId: string;
+      batchId: string;
+      warehouseId: string;
+      locationId: string | null;
+      quantity: number;
+      productionOrderId?: string | null;
+      createdById: string;
+      referenceId: string;
+    },
+  ) {
+    const reserved = await tx.inventoryStock.findFirst({
+      where: {
+        companyId: params.companyId,
+        materialId: params.materialId,
+        batchId: params.batchId,
+        warehouseId: params.warehouseId,
+        status: 'reserved',
+        quantity: { gte: params.quantity },
+        ...(params.locationId ? { locationId: params.locationId } : {}),
+      },
+    });
+    if (!reserved) {
+      throw new BadRequestException(
+        'Insufficient reserved stock for issue against reservation',
+      );
+    }
+
+    await this.stock.deduct(
+      {
+        companyId: params.companyId,
+        materialId: params.materialId,
+        batchId: params.batchId,
+        warehouseId: params.warehouseId,
+        locationId: reserved.locationId,
+        status: 'reserved',
+      },
+      params.quantity,
+      {
+        transactionType: 'issue',
+        referenceType: 'material_issue',
+        referenceId: params.referenceId,
+        createdById: params.createdById,
+      },
+      tx,
+    );
+
+    const reservations = await tx.planningReservation.findMany({
+      where: {
+        companyId: params.companyId,
+        materialId: params.materialId,
+        status: 'active',
+        ...(params.productionOrderId
+          ? { productionOrderId: params.productionOrderId }
+          : {}),
+        OR: [{ batchId: params.batchId }, { batchId: null }],
+      },
+      orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+    });
+
+    let remaining = params.quantity;
+    for (const r of reservations) {
+      if (remaining <= 0) break;
+      if (r.quantity <= remaining) {
+        remaining -= r.quantity;
+        await tx.planningReservation.update({
+          where: { id: r.id },
+          data: { status: 'consumed' },
+        });
+      } else {
+        await tx.planningReservation.update({
+          where: { id: r.id },
+          data: { quantity: r.quantity - remaining },
+        });
+        remaining = 0;
+      }
+    }
+
+    return { consumedFromReserved: true };
   }
 }

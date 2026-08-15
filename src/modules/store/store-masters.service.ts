@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { paginateParams, paginatedResult } from '../../common/dto/pagination.dto';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
+import { CreateMaterialDto, UpdateMaterialDto } from './dto/store.dto';
 
 @Injectable()
 export class StoreMastersService {
@@ -13,6 +14,16 @@ export class StoreMastersService {
 
   listUnits() {
     return this.prisma.unit.findMany({ orderBy: { code: 'asc' } });
+  }
+
+  createUnit(data: { code: string; name: string }) {
+    return this.prisma.unit.create({
+      data: { code: data.code.trim().toUpperCase(), name: data.name.trim() },
+    });
+  }
+
+  updateUnit(id: string, data: { name?: string }) {
+    return this.prisma.unit.update({ where: { id }, data });
   }
 
   async listCategories(companyId: string, q: PaginationQueryDto) {
@@ -82,24 +93,7 @@ export class StoreMastersService {
 
   async createMaterial(
     companyId: string,
-    data: {
-      code: string;
-      name: string;
-      categoryId: string;
-      unitId: string;
-      qcRequired?: boolean;
-      serialTracked?: boolean;
-      minStock?: number;
-      maxStock?: number;
-      reorderLevel?: number;
-      reorderQty?: number;
-      safetyStock?: number;
-      defaultWarehouseId?: string;
-      defaultLocationId?: string;
-      shelfLifeDays?: number;
-      hsn?: string;
-      gstPercent?: number;
-    },
+    data: CreateMaterialDto,
   ) {
     let qcRequired = data.qcRequired;
     if (qcRequired === undefined) {
@@ -121,6 +115,21 @@ export class StoreMastersService {
     });
   }
 
+  async getMaterial(companyId: string, id: string) {
+    const material = await this.prisma.material.findFirst({
+      where: { id, companyId },
+      include: {
+        category: true,
+        unit: true,
+        defaultWarehouse: true,
+        defaultLocation: true,
+        preferredSupplier: true,
+      },
+    });
+    if (!material) throw new NotFoundException('Material not found');
+    return material;
+  }
+
   async listWarehouses(companyId: string) {
     return this.prisma.warehouse.findMany({
       where: { companyId },
@@ -136,7 +145,7 @@ export class StoreMastersService {
     return this.prisma.warehouse.create({ data: { companyId, ...data } });
   }
 
-  createLocation(
+  async createLocation(
     companyId: string,
     data: {
       warehouseId: string;
@@ -146,6 +155,28 @@ export class StoreMastersService {
       name: string;
     },
   ) {
+    const parentTypes: Record<string, string | null> = {
+      ZONE: null,
+      RACK: 'ZONE',
+      SHELF: 'RACK',
+      BIN: 'SHELF',
+    };
+    const requiredParent = parentTypes[data.type];
+    if (requiredParent) {
+      const parent = await this.prisma.location.findFirst({
+        where: {
+          id: data.parentId,
+          companyId,
+          warehouseId: data.warehouseId,
+          type: requiredParent as 'ZONE' | 'RACK' | 'SHELF' | 'BIN',
+        },
+      });
+      if (!parent) {
+        throw new BadRequestException(`${data.type} requires a ${requiredParent} parent`);
+      }
+    } else if (data.parentId) {
+      throw new BadRequestException('ZONE cannot have a parent');
+    }
     return this.prisma.location.create({
       data: { companyId, ...data },
     });
@@ -154,29 +185,7 @@ export class StoreMastersService {
   async updateMaterial(
     companyId: string,
     id: string,
-    data: {
-      name?: string;
-      categoryId?: string;
-      unitId?: string;
-      qcRequired?: boolean;
-      serialTracked?: boolean;
-      minStock?: number;
-      maxStock?: number;
-      reorderLevel?: number;
-      reorderQty?: number;
-      safetyStock?: number;
-      defaultWarehouseId?: string | null;
-      defaultLocationId?: string | null;
-      shelfLifeDays?: number | null;
-      leadTimeDays?: number | null;
-      hsn?: string | null;
-      gstPercent?: number | null;
-      drawingNumber?: string | null;
-      revision?: string | null;
-      preferredSupplierId?: string | null;
-      status?: string;
-      subcategory?: string | null;
-    },
+    data: UpdateMaterialDto,
   ) {
     const existing = await this.prisma.material.findFirst({
       where: { id, companyId },

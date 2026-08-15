@@ -8,9 +8,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StockEngine } from './engines/stock.engine';
 import { FifoEngine } from './engines/fifo.engine';
 import { LocationEngine } from './engines/location.engine';
+import { ReservationEngine } from './engines/reservation.engine';
 import { paginateParams, paginatedResult, PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { DocumentSeriesService } from '../company-settings/document-series.service';
 import { resolveWorkflow } from '../../common/workflow/company-workflow';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class IssueService {
@@ -19,7 +21,9 @@ export class IssueService {
     private readonly stock: StockEngine,
     private readonly fifo: FifoEngine,
     private readonly locations: LocationEngine,
+    private readonly reservations: ReservationEngine,
     private readonly series: DocumentSeriesService,
+    private readonly audit: AuditService,
   ) {}
 
   private async nextIssueNumber(companyId: string) {
@@ -31,12 +35,14 @@ export class IssueService {
     materialId: string,
     quantity: number,
     warehouseId?: string,
+    status?: string,
   ) {
     return this.fifo.suggestBatches(
       companyId,
       materialId,
       quantity,
       warehouseId,
+      status || 'available',
     );
   }
 
@@ -93,7 +99,7 @@ export class IssueService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const number = await this.nextIssueNumber(companyId);
       const issue = await tx.materialIssue.create({
         data: {
@@ -111,80 +117,129 @@ export class IssueService {
         },
       });
 
+      let reservedConsumed = false;
+
       for (const line of dto.lines) {
-        const suggestion = await this.fifo.suggestBatches(
-          companyId,
-          line.materialId,
-          line.quantity,
-          dto.warehouseId,
-        );
-        const first = suggestion.picks[0];
-        const isFifo =
-          !first || first.batchId === line.batchId || dto.allowFifoOverride;
-
-        if (!isFifo) {
-          throw new BadRequestException(
-            `FIFO violation: expected batch ${first?.batchNumber}`,
-          );
-        }
-
-        if (
-          first &&
-          first.batchId !== line.batchId &&
-          dto.allowFifoOverride
-        ) {
-          if (!userPermissions.includes('store.fifo.override')) {
-            throw new ForbiddenException('FIFO override permission required');
-          }
-          await tx.fifoOverrideLog.create({
-            data: {
-              companyId,
-              materialId: line.materialId,
-              batchId: line.batchId,
-              quantity: line.quantity,
-              reason: dto.overrideReason,
-              approvedBy: userId,
-              createdById: userId,
-            },
-          });
-        }
-
-        // cannot issue rejected
-        const avail = await tx.inventoryStock.findFirst({
+        const activeReservation = await tx.planningReservation.findFirst({
           where: {
             companyId,
             materialId: line.materialId,
-            batchId: line.batchId,
-            warehouseId: dto.warehouseId,
-            status: 'available',
-            quantity: { gte: line.quantity },
-            ...(line.locationId ? { locationId: line.locationId } : {}),
+            status: 'active',
+            ...(productionOrderId
+              ? { productionOrderId }
+              : {}),
+            OR: [{ batchId: line.batchId }, { batchId: null }],
           },
         });
-        if (!avail) {
-          throw new BadRequestException(
-            'Insufficient approved (available) stock for issue',
-          );
-        }
+        const preferReserved =
+          !!dto.materialRequestId || !!activeReservation;
 
-        await this.stock.deduct(
-          {
+        const reserved = preferReserved
+          ? await tx.inventoryStock.findFirst({
+              where: {
+                companyId,
+                materialId: line.materialId,
+                batchId: line.batchId,
+                warehouseId: dto.warehouseId,
+                status: 'reserved',
+                quantity: { gte: line.quantity },
+                ...(line.locationId ? { locationId: line.locationId } : {}),
+              },
+            })
+          : null;
+
+        let fifoOverride = false;
+
+        if (reserved) {
+          await this.reservations.consumeForIssue(tx, {
             companyId,
             materialId: line.materialId,
             batchId: line.batchId,
             warehouseId: dto.warehouseId,
-            locationId: avail.locationId,
-            status: 'available',
-          },
-          line.quantity,
-          {
-            transactionType: 'issue',
-            referenceType: 'material_issue',
-            referenceId: issue.id,
+            locationId: reserved.locationId,
+            quantity: line.quantity,
+            productionOrderId,
             createdById: userId,
-          },
-          tx,
-        );
+            referenceId: issue.id,
+          });
+          reservedConsumed = true;
+        } else {
+          const suggestion = await this.fifo.suggestBatches(
+            companyId,
+            line.materialId,
+            line.quantity,
+            dto.warehouseId,
+          );
+          const first = suggestion.picks[0];
+          const isFifo =
+            !first || first.batchId === line.batchId || dto.allowFifoOverride;
+
+          if (!isFifo) {
+            throw new BadRequestException(
+              `FIFO violation: expected batch ${first?.batchNumber}`,
+            );
+          }
+
+          if (
+            first &&
+            first.batchId !== line.batchId &&
+            dto.allowFifoOverride
+          ) {
+            if (!userPermissions.includes('store.fifo.override')) {
+              throw new ForbiddenException('FIFO override permission required');
+            }
+            fifoOverride = true;
+            await tx.fifoOverrideLog.create({
+              data: {
+                companyId,
+                materialId: line.materialId,
+                batchId: line.batchId,
+                quantity: line.quantity,
+                reason: dto.overrideReason,
+                approvedBy: userId,
+                createdById: userId,
+              },
+            });
+          }
+
+          const avail = await tx.inventoryStock.findFirst({
+            where: {
+              companyId,
+              materialId: line.materialId,
+              batchId: line.batchId,
+              warehouseId: dto.warehouseId,
+              status: 'available',
+              quantity: { gte: line.quantity },
+              ...(line.locationId ? { locationId: line.locationId } : {}),
+            },
+          });
+          if (!avail) {
+            throw new BadRequestException(
+              preferReserved
+                ? 'Insufficient reserved or available stock for issue'
+                : 'Insufficient approved (available) stock for issue',
+            );
+          }
+
+          await this.stock.deduct(
+            {
+              companyId,
+              materialId: line.materialId,
+              batchId: line.batchId,
+              warehouseId: dto.warehouseId,
+              locationId: avail.locationId,
+              status: 'available',
+            },
+            line.quantity,
+            {
+              transactionType: 'issue',
+              referenceType: 'material_issue',
+              referenceId: issue.id,
+              createdById: userId,
+            },
+            tx,
+          );
+        }
 
         const issueItem = await tx.materialIssueItem.create({
           data: {
@@ -192,11 +247,7 @@ export class IssueService {
             materialId: line.materialId,
             batchId: line.batchId,
             quantity: line.quantity,
-            fifoOverride: !!(
-              first &&
-              first.batchId !== line.batchId &&
-              dto.allowFifoOverride
-            ),
+            fifoOverride,
           },
         });
 
@@ -304,7 +355,7 @@ export class IssueService {
         });
       }
 
-      return tx.materialIssue.findUnique({
+      const created = await tx.materialIssue.findUnique({
         where: { id: issue.id },
         include: {
           items: { include: { material: true, batch: true } },
@@ -312,7 +363,24 @@ export class IssueService {
           warehouse: true,
         },
       });
+
+      return { ...created!, reservedConsumed };
     });
+
+    await this.audit.writeActivity({
+      companyId,
+      userId,
+      action: 'store.issue.posted',
+      entityType: 'material_issue',
+      entityId: result.id,
+      meta: {
+        number: result.number,
+        reservedConsumed: result.reservedConsumed,
+        lineCount: result.items?.length ?? 0,
+      },
+    });
+
+    return result;
   }
 
   async listIssues(companyId: string, q: PaginationQueryDto) {
@@ -358,7 +426,7 @@ export class IssueService {
     await this.locations.assertWarehouse(companyId, dto.warehouseId);
     const number = await this.series.next(companyId, 'material_return');
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const ret = await tx.materialReturn.create({
         data: {
           companyId,
@@ -424,6 +492,17 @@ export class IssueService {
         include: { items: { include: { material: true, batch: true } } },
       });
     });
+
+    await this.audit.writeActivity({
+      companyId,
+      userId,
+      action: 'store.return.posted',
+      entityType: 'material_return',
+      entityId: result!.id,
+      meta: { number: result!.number },
+    });
+
+    return result;
   }
 
   async createTransfer(
@@ -448,7 +527,7 @@ export class IssueService {
 
     const number = await this.series.next(companyId, 'stock_transfer');
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const transfer = await tx.stockTransfer.create({
         data: {
           companyId,
@@ -516,6 +595,17 @@ export class IssueService {
         include: { lines: { include: { material: true, batch: true } } },
       });
     });
+
+    await this.audit.writeActivity({
+      companyId,
+      userId,
+      action: 'store.transfer.posted',
+      entityType: 'stock_transfer',
+      entityId: result!.id,
+      meta: { number: result!.number },
+    });
+
+    return result;
   }
 
   async listReturns(companyId: string, q: PaginationQueryDto) {

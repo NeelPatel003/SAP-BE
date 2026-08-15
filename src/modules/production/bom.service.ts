@@ -10,12 +10,16 @@ import {
   PaginationQueryDto,
 } from '../../common/dto/pagination.dto';
 import { DocumentSeriesService } from '../company-settings/document-series.service';
+import { ReservationEngine } from '../store/engines/reservation.engine';
+import { FifoEngine } from '../store/engines/fifo.engine';
 
 @Injectable()
 export class BomService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly series: DocumentSeriesService,
+    private readonly reservations: ReservationEngine,
+    private readonly fifo: FifoEngine,
   ) {}
 
   async list(companyId: string, q: PaginationQueryDto & { status?: string }) {
@@ -201,7 +205,7 @@ export class BomService {
     if (!po) throw new NotFoundException('Production order not found');
 
     const number = await this.series.next(companyId, 'material_request');
-    return this.prisma.materialRequest.create({
+    const request = await this.prisma.materialRequest.create({
       data: {
         companyId,
         number,
@@ -228,5 +232,27 @@ export class BomService {
         lines: { include: { material: true } },
       },
     });
+    for (const line of request.lines) {
+      const suggestion = await this.fifo.suggestBatches(
+        companyId,
+        line.materialId,
+        line.requestedQty,
+      );
+      if (!suggestion.fullyCovered) continue;
+      for (const pick of suggestion.picks) {
+        await this.reservations.create({
+          companyId,
+          materialId: line.materialId,
+          quantity: pick.quantity,
+          productionOrderId: body.productionOrderId,
+          batchId: pick.batchId,
+          warehouseId: pick.warehouseId,
+          priority: po.priority,
+          productionDate: po.requiredDate ?? undefined,
+          notes: `Auto-reserved for ${request.number}`,
+        });
+      }
+    }
+    return request;
   }
 }

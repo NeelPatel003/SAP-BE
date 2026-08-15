@@ -1,0 +1,28 @@
+#!/bin/sh
+# Block work-email commits on personal Teamora repos.
+EXPECTED_EMAIL="patelneel033@gmail.com"
+EXPECTED_NAME="Neel Patel"
+BLOCKED_DOMAIN="theintellify.com"
+
+AUTHOR_EMAIL=$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+AUTHOR_NAME=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\([^<]*\) <.*/\1/p' | sed 's/[[:space:]]*$//')
+
+case "$AUTHOR_EMAIL" in
+  *"@$BLOCKED_DOMAIN")
+    echo "ERROR: Refusing commit with work email ($AUTHOR_EMAIL)."
+    echo "This repo is personal. Use: $EXPECTED_NAME <$EXPECTED_EMAIL>"
+    exit 1
+    ;;
+esac
+
+if [ "$AUTHOR_EMAIL" != "$EXPECTED_EMAIL" ]; then
+  echo "ERROR: Author email must be $EXPECTED_EMAIL (got $AUTHOR_EMAIL)."
+  exit 1
+fi
+
+if [ "$AUTHOR_NAME" != "$EXPECTED_NAME" ]; then
+  echo "ERROR: Author name must be \"$EXPECTED_NAME\" (got \"$AUTHOR_NAME\")."
+  exit 1
+fi
+
+exit 0

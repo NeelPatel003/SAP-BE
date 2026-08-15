@@ -1,36 +1,57 @@
-# Pings Render every 5 minutes so free/starter instances do not idle-sleep.
-# Set repo secret RENDER_HEALTH_URL = https://<your-service>.onrender.com/health
+# Pings Render every 5 minutes so free instances do not idle-sleep.
+# Secret (repo): RENDER_HEALTH_URL = https://<your-service>.onrender.com/health
 name: Keep Render warm
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   ping:
+    name: Ping Render /health
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
-      - name: Ping /health
+      - name: 1 — Show run info
+        run: |
+          echo "Workflow: Keep Render warm"
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "Branch/ref: ${{ github.ref }}"
+          echo "Time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: 2 — Check RENDER_HEALTH_URL secret
+        env:
+          HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
+        run: |
+          if [ -z "${HEALTH_URL}" ]; then
+            echo "::error::Missing GitHub Actions secret RENDER_HEALTH_URL"
+            echo "Fix: SAP-BE → Settings → Secrets and variables → Actions"
+            echo "Add secret name: RENDER_HEALTH_URL"
+            echo "Value example: https://your-service.onrender.com/health"
+            exit 1
+          fi
+          # Do not print the full URL if it embeds credentials (it should not)
+          echo "Secret is set (length ${#HEALTH_URL})"
+          echo "Host path: $(echo "$HEALTH_URL" | sed -E 's#https?://##' | cut -d@ -f2)"
+
+      - name: 3 — Ping /health (retry x3)
         env:
           HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
         run: |
           set -euo pipefail
-          if [ -z "${HEALTH_URL}" ]; then
-            echo "Missing secret RENDER_HEALTH_URL"
-            echo "Example: https://your-service.onrender.com/health"
-            exit 1
-          fi
-          echo "Pinging health endpoint"
           for i in 1 2 3; do
-            if curl -fsS --max-time 45 -H 'Cache-Control: no-cache' "$HEALTH_URL"; then
-              echo
+            echo "Attempt $i…"
+            if body=$(curl -fsS --max-time 60 -H 'Cache-Control: no-cache' "$HEALTH_URL"); then
+              echo "Response: $body"
               echo "ok (attempt $i)"
               exit 0
             fi
-            echo "attempt $i failed; retrying..."
-            sleep 5
+            echo "attempt $i failed; waiting 8s…"
+            sleep 8
           done
-          echo "health check failed after retries"
+          echo "::error::Health check failed after 3 attempts"
           exit 1

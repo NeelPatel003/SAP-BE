@@ -1,5 +1,5 @@
-# Pings Render every 5 minutes so free instances do not idle-sleep.
-# Secret (repo): RENDER_HEALTH_URL = https://<your-service>.onrender.com/health
+# Keep Render free instances awake by pinging /health.
+# Set HEALTH_URL below to your live BE health endpoint (manual — no GitHub secret required).
 name: Keep Render warm
 
 on:
@@ -9,6 +9,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # >>> EDIT THIS to your Render URL (no trailing slash before /health) <<<
+  HEALTH_URL: https://REPLACE-WITH-YOUR-SERVICE.onrender.com/health
 
 jobs:
   ping:
@@ -23,24 +27,16 @@ jobs:
           echo "Branch/ref: ${{ github.ref }}"
           echo "Time (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-      - name: 2 — Check RENDER_HEALTH_URL secret
-        env:
-          HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
+      - name: 2 — Check HEALTH_URL
         run: |
-          if [ -z "${HEALTH_URL}" ]; then
-            echo "::error::Missing GitHub Actions secret RENDER_HEALTH_URL"
-            echo "Fix: SAP-BE → Settings → Secrets and variables → Actions"
-            echo "Add secret name: RENDER_HEALTH_URL"
-            echo "Value example: https://your-service.onrender.com/health"
+          if [ -z "${HEALTH_URL}" ] || echo "${HEALTH_URL}" | grep -q 'REPLACE-WITH-YOUR-SERVICE'; then
+            echo "::error::Set HEALTH_URL in .github/workflows/keep-warm.yml"
+            echo "Example: https://sap-be-xxxx.onrender.com/health"
             exit 1
           fi
-          # Do not print the full URL if it embeds credentials (it should not)
-          echo "Secret is set (length ${#HEALTH_URL})"
-          echo "Host path: $(echo "$HEALTH_URL" | sed -E 's#https?://##' | cut -d@ -f2)"
+          echo "Pinging: ${HEALTH_URL}"
 
       - name: 3 — Ping /health (retry x3)
-        env:
-          HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
         run: |
           set -euo pipefail
           for i in 1 2 3; do

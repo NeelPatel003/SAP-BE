@@ -36,6 +36,19 @@ If Prisma generate fails on sandboxed machines, engines are cached under `prisma
 - Swagger: http://localhost:4000/docs  
 - Health: http://localhost:4000/health  
 
+## Render cold starts
+
+Free Render web services sleep after ~15 minutes idle. To keep the API warm:
+
+1. Prefer **paid / always-on** instance type when you need reliable latency.
+2. Or use the repo workflow [`.github/workflows/keep-warm.yml`](.github/workflows/keep-warm.yml):
+   - In GitHub → **Settings → Secrets and variables → Actions**, add  
+     `RENDER_HEALTH_URL` = `https://<your-service>.onrender.com/health`
+   - Workflow runs every 5 minutes (and via **Actions → Keep Render warm → Run workflow**)
+3. Optionally also add the same URL in [UptimeRobot](https://uptimerobot.com) (5‑min HTTP monitor) as a backup if GitHub cron delays.
+
+`/health` is public and checks Postgres so wake-ups also warm the DB connection.
+
 ## Production security checklist
 
 - `NODE_ENV=production`

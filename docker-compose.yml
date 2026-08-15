@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: teamora-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: teamora
+      POSTGRES_PASSWORD: teamora
+      POSTGRES_DB: teamora
+    volumes:
+      - teamora_pg_data:/var/lib/postgresql/data
+
+volumes:
+  teamora_pg_data:

@@ -1,0 +1,1120 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CompanyStatus {
+  active
+  suspended
+  trial
+}
+
+enum UserStatus {
+  active
+  inactive
+  suspended
+}
+
+enum RoleScope {
+  PLATFORM
+  COMPANY
+}
+
+enum LocationType {
+  ZONE
+  RACK
+  SHELF
+  BIN
+}
+
+enum GrnStatus {
+  draft
+  pending_qc
+  partial
+  approved
+  rejected
+  completed
+}
+
+enum PoStatus {
+  draft
+  open
+  partial
+  closed
+  cancelled
+}
+
+enum QcResult {
+  accepted
+  rejected
+  hold
+  deviation
+}
+
+enum IssueStatus {
+  draft
+  posted
+  cancelled
+}
+
+enum TransferStatus {
+  draft
+  posted
+  cancelled
+}
+
+enum ReservationStatus {
+  active
+  released
+  consumed
+  cancelled
+}
+
+enum TraceLinkType {
+  grn_to_batch
+  batch_to_issue
+  issue_to_production
+  batch_to_return
+  batch_to_transfer
+}
+
+model Company {
+  id             String        @id @default(cuid())
+  name           String
+  slug           String        @unique
+  status         CompanyStatus @default(trial)
+  enabledModules Json          @default("[]") @map("enabled_modules")
+  plan           String?
+  legalName      String?       @map("legal_name")
+  taxId          String?       @map("tax_id")
+  phone          String?
+  address        String?
+  currency       String        @default("INR")
+  timezone       String        @default("Asia/Kolkata")
+  logoUrl        String?       @map("logo_url")
+  primaryColor   String?       @map("primary_color")
+  secondaryColor String?       @map("secondary_color")
+  displayName    String?       @map("display_name")
+  settings       Json          @default("{}")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  users                  User[]
+  activityLogs           ActivityLog[]
+  auditLogs              AuditLog[]
+  apiRequestLogs         ApiRequestLog[]
+  materialCategories     MaterialCategory[]
+  materials              Material[]
+  warehouses             Warehouse[]
+  locations              Location[]
+  suppliers              Supplier[]
+  supplierQualityMetrics SupplierQualityMetric[]
+  purchaseOrders         PurchaseOrder[]
+  productionOrders       ProductionOrder[]
+  materialRequests       MaterialRequest[]
+  goodsReceipts          GoodsReceipt[]
+  inventoryBatches       InventoryBatch[]
+  inventoryStocks        InventoryStock[]
+  inventoryTransactions  InventoryTransaction[]
+  materialIssues         MaterialIssue[]
+  materialReturns        MaterialReturn[]
+  stockTransfers         StockTransfer[]
+  planningReservations   PlanningReservation[]
+  batchTraceabilityLinks BatchTraceabilityLink[]
+  fifoOverrideLogs       FifoOverrideLog[]
+  qcInspections          QcInspection[]
+  documentSeries         DocumentSeries[]
+  featureUsageEvents     FeatureUsageEvent[]
+  notifications          Notification[]
+  bomHeaders             BomHeader[]
+  inventorySerials       InventorySerial[]
+  dispatchOrders         DispatchOrder[]
+
+  @@map("companies")
+}
+
+model DocumentSeries {
+  id           String   @id @default(cuid())
+  companyId    String   @map("company_id")
+  docType      String   @map("doc_type")
+  prefix       String
+  includeYear  Boolean  @default(true) @map("include_year")
+  padLength    Int      @default(5) @map("pad_length")
+  resetPolicy  String   @default("yearly") @map("reset_policy")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, docType])
+  @@index([companyId])
+  @@map("document_series")
+}
+
+model User {
+  id           String     @id @default(cuid())
+  companyId    String?    @map("company_id")
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  name         String
+  status       UserStatus @default(active)
+  lastLoginAt  DateTime?  @map("last_login_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  company        Company?         @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  userRoles      UserRole[]
+  refreshTokens  RefreshToken[]
+  activityLogs         ActivityLog[]
+  auditLogs            AuditLog[]
+  apiRequestLogs       ApiRequestLog[]
+  featureUsageEvents   FeatureUsageEvent[]
+  notifications        Notification[]
+
+  @@index([companyId])
+  @@map("users")
+}
+
+model AppModule {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  permissions Permission[]
+
+  @@map("modules")
+}
+
+model Role {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  name        String
+  description String?
+  isSystem    Boolean   @default(false) @map("is_system")
+  scope       RoleScope @default(COMPANY)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  moduleId    String?  @map("module_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  module          AppModule?       @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+  rolePermissions RolePermission[]
+
+  @@index([moduleId])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String @map("user_id")
+  roleId String @map("role_id")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model ActivityLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  companyId  String?  @map("company_id")
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  meta       Json?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  companyId String?  @map("company_id")
+  event     String
+  success   Boolean  @default(true)
+  message   String?
+  meta      Json?
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([event])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model ApiRequestLog {
+  id         String   @id @default(cuid())
+  method     String
+  path       String
+  statusCode Int      @map("status_code")
+  durationMs Int      @map("duration_ms")
+  userId     String?  @map("user_id")
+  companyId  String?  @map("company_id")
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([path])
+  @@index([createdAt])
+  @@map("api_request_logs")
+}
+
+/// Billable feature meter (AI tokens, emails, PDF exports) — not HTTP traffic.
+model FeatureUsageEvent {
+  id           String   @id @default(cuid())
+  companyId    String   @map("company_id")
+  userId       String?  @map("user_id")
+  feature      String
+  provider     String?
+  model        String?
+  inputUnits   Int      @default(0) @map("input_units")
+  outputUnits  Int      @default(0) @map("output_units")
+  costMicros   Int      @default(0) @map("cost_micros")
+  requestId    String?  @map("request_id")
+  meta         Json?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, feature])
+  @@index([userId])
+  @@map("feature_usage_events")
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  companyId String    @map("company_id")
+  userId    String    @map("user_id")
+  type      String
+  title     String
+  body      String?
+  link      String?
+  meta      Json?
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([companyId, createdAt])
+  @@map("notifications")
+}
+
+// ===== Global masters =====
+
+model Unit {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  materials Material[]
+
+  @@map("units")
+}
+
+// ===== Company masters =====
+
+model MaterialCategory {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  code        String
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  materials Material[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@map("material_categories")
+}
+
+model Material {
+  id                String   @id @default(cuid())
+  companyId         String   @map("company_id")
+  categoryId        String   @map("category_id")
+  unitId            String   @map("unit_id")
+  code              String
+  name              String
+  subcategory       String?
+  hsn               String?
+  gstPercent        Float?   @map("gst_percent")
+  drawingNumber     String?  @map("drawing_number")
+  revision          String?
+  minStock          Float    @default(0) @map("min_stock")
+  maxStock          Float    @default(0) @map("max_stock")
+  reorderLevel      Float    @default(0) @map("reorder_level")
+  reorderQty        Float    @default(0) @map("reorder_qty")
+  safetyStock       Float    @default(0) @map("safety_stock")
+  defaultWarehouseId String? @map("default_warehouse_id")
+  defaultLocationId String?  @map("default_location_id")
+  shelfLifeDays     Int?     @map("shelf_life_days")
+  leadTimeDays      Int?     @map("lead_time_days")
+  preferredSupplierId String? @map("preferred_supplier_id")
+  qcRequired        Boolean  @default(true) @map("qc_required")
+  serialTracked     Boolean  @default(false) @map("serial_tracked")
+  status            String   @default("active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category          MaterialCategory  @relation(fields: [categoryId], references: [id])
+  unit              Unit              @relation(fields: [unitId], references: [id])
+  defaultWarehouse  Warehouse?        @relation("MaterialDefaultWarehouse", fields: [defaultWarehouseId], references: [id])
+  defaultLocation   Location?         @relation("MaterialDefaultLocation", fields: [defaultLocationId], references: [id])
+  preferredSupplier Supplier?         @relation(fields: [preferredSupplierId], references: [id])
+  poItems           PurchaseOrderItem[]
+  grnItems          GoodsReceiptItem[]
+  batches           InventoryBatch[]
+  stocks            InventoryStock[]
+  transactions      InventoryTransaction[]
+  issueItems        MaterialIssueItem[]
+  returnItems       MaterialReturnItem[]
+  transferLines     StockTransferLine[]
+  reservations      PlanningReservation[]
+  requestLines      MaterialRequestLine[]
+  bomHeaders        BomHeader[]
+  bomLinesAsComponent BomLine[]       @relation("BomComponent")
+  serials           InventorySerial[]
+  dispatchLines     DispatchLine[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@index([categoryId])
+  @@map("materials")
+}
+
+model Warehouse {
+  id        String   @id @default(cuid())
+  companyId String   @map("company_id")
+  code      String
+  name      String
+  address   String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  locations          Location[]
+  materialsDefault   Material[]          @relation("MaterialDefaultWarehouse")
+  stocks             InventoryStock[]
+  transactions       InventoryTransaction[]
+  issuesFrom         MaterialIssue[]
+  returns            MaterialReturn[]
+  transfersFrom      StockTransfer[]     @relation("TransferFromWh")
+  transfersTo        StockTransfer[]     @relation("TransferToWh")
+  dispatchOrders     DispatchOrder[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@map("warehouses")
+}
+
+model Location {
+  id          String       @id @default(cuid())
+  companyId   String       @map("company_id")
+  warehouseId String       @map("warehouse_id")
+  parentId    String?      @map("parent_id")
+  type        LocationType
+  code        String
+  name        String
+  isActive    Boolean      @default(true) @map("is_active")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  company          Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  warehouse        Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  parent           Location?           @relation("LocationTree", fields: [parentId], references: [id])
+  children         Location[]          @relation("LocationTree")
+  materialsDefault Material[]          @relation("MaterialDefaultLocation")
+  stocks           InventoryStock[]
+  transactions     InventoryTransaction[]
+  transferFromLines StockTransferLine[] @relation("TransferFromLoc")
+  transferToLines   StockTransferLine[] @relation("TransferToLoc")
+
+  @@unique([companyId, warehouseId, code])
+  @@index([companyId])
+  @@index([warehouseId])
+  @@index([parentId])
+  @@map("locations")
+}
+
+// ===== Integration stubs =====
+
+model Supplier {
+  id        String   @id @default(cuid())
+  companyId String   @map("company_id")
+  code      String
+  name      String
+  email     String?
+  phone     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  company       Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  materials     Material[]
+  purchaseOrders PurchaseOrder[]
+  goodsReceipts GoodsReceipt[]
+  qualityMetric SupplierQualityMetric?
+
+  @@unique([companyId, code])
+  @@index([companyId])
+  @@map("suppliers")
+}
+
+model SupplierQualityMetric {
+  id            String   @id @default(cuid())
+  companyId     String   @map("company_id")
+  supplierId    String   @unique @map("supplier_id")
+  qualityPct    Float    @default(100) @map("quality_pct")
+  rejectionPct  Float    @default(0) @map("rejection_pct")
+  ppm           Float    @default(0)
+  complaintCount Int     @default(0) @map("complaint_count")
+  inspectedQty  Float    @default(0) @map("inspected_qty")
+  acceptedQty   Float    @default(0) @map("accepted_qty")
+  rejectedQty   Float    @default(0) @map("rejected_qty")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@map("supplier_quality_metrics")
+}
+
+model PurchaseOrder {
+  id         String   @id @default(cuid())
+  companyId  String   @map("company_id")
+  supplierId String   @map("supplier_id")
+  number     String
+  status     PoStatus @default(open)
+  orderDate  DateTime @default(now()) @map("order_date")
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier      Supplier            @relation(fields: [supplierId], references: [id])
+  items         PurchaseOrderItem[]
+  goodsReceipts GoodsReceipt[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id             String @id @default(cuid())
+  purchaseOrderId String @map("purchase_order_id")
+  materialId     String @map("material_id")
+  orderedQty     Float  @map("ordered_qty")
+  receivedQty    Float  @default(0) @map("received_qty")
+  unitPrice      Float? @map("unit_price")
+
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  material      Material           @relation(fields: [materialId], references: [id])
+  grnItems      GoodsReceiptItem[]
+
+  @@index([purchaseOrderId])
+  @@index([materialId])
+  @@map("purchase_order_items")
+}
+
+model ProductionOrder {
+  id           String   @id @default(cuid())
+  companyId    String   @map("company_id")
+  number       String
+  status       String   @default("open")
+  requiredDate DateTime? @map("required_date")
+  priority     Int      @default(5)
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  company          Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  issues           MaterialIssue[]
+  reservations     PlanningReservation[]
+  materialRequests MaterialRequest[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("production_orders")
+}
+
+model MaterialRequest {
+  id                String   @id @default(cuid())
+  companyId         String   @map("company_id")
+  number            String
+  productionOrderId String?  @map("production_order_id")
+  status            String   @default("pending")
+  requestedBy       String?  @map("requested_by")
+  notes             String?
+  createdById       String?  @map("created_by_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  company         Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  productionOrder ProductionOrder?      @relation(fields: [productionOrderId], references: [id])
+  lines           MaterialRequestLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("material_requests")
+}
+
+model MaterialRequestLine {
+  id                String @id @default(cuid())
+  materialRequestId String @map("material_request_id")
+  materialId        String @map("material_id")
+  requestedQty      Float  @map("requested_qty")
+  issuedQty         Float  @default(0) @map("issued_qty")
+
+  materialRequest MaterialRequest @relation(fields: [materialRequestId], references: [id], onDelete: Cascade)
+  material        Material        @relation(fields: [materialId], references: [id])
+
+  @@index([materialRequestId])
+  @@map("material_request_lines")
+}
+
+// ===== Store core =====
+
+model GoodsReceipt {
+  id              String    @id @default(cuid())
+  companyId       String    @map("company_id")
+  number          String
+  purchaseOrderId String?   @map("purchase_order_id")
+  supplierId      String    @map("supplier_id")
+  status          GrnStatus @default(draft)
+  receiveDate     DateTime  @default(now()) @map("receive_date")
+  supplierInvoice String?   @map("supplier_invoice")
+  supplierChallan String?   @map("supplier_challan")
+  vehicleNumber   String?   @map("vehicle_number")
+  transport       String?
+  receivingPerson String?   @map("receiving_person")
+  readyForAccounts Boolean  @default(false) @map("ready_for_accounts")
+  accountsBookedAt DateTime? @map("accounts_booked_at")
+  notes           String?
+  createdById     String?   @map("created_by_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  company       Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder?     @relation(fields: [purchaseOrderId], references: [id])
+  supplier      Supplier           @relation(fields: [supplierId], references: [id])
+  items         GoodsReceiptItem[]
+  batches       InventoryBatch[]
+  qcInspections QcInspection[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@index([status])
+  @@map("goods_receipts")
+}
+
+model GoodsReceiptItem {
+  id                 String  @id @default(cuid())
+  goodsReceiptId     String  @map("goods_receipt_id")
+  purchaseOrderItemId String? @map("purchase_order_item_id")
+  materialId         String  @map("material_id")
+  warehouseId        String  @map("warehouse_id")
+  locationId         String? @map("location_id")
+  orderedQty         Float   @default(0) @map("ordered_qty")
+  receivedQty        Float   @map("received_qty")
+  damageQty          Float   @default(0) @map("damage_qty")
+  shortQty           Float   @default(0) @map("short_qty")
+  excessQty          Float   @default(0) @map("excess_qty")
+  acceptedQty        Float   @default(0) @map("accepted_qty")
+  rejectedQty        Float   @default(0) @map("rejected_qty")
+  reworkQty          Float   @default(0) @map("rework_qty")
+  qcRequired         Boolean @default(true) @map("qc_required")
+  qcStatus           String  @default("pending") @map("qc_status")
+  batchId            String? @map("batch_id")
+  supplierBatch      String? @map("supplier_batch")
+  manufacturingDate  DateTime? @map("manufacturing_date")
+  expiryDate         DateTime? @map("expiry_date")
+  lotNumber          String? @map("lot_number")
+  heatNumber         String? @map("heat_number")
+
+  goodsReceipt      GoodsReceipt       @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItem PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id])
+  material          Material           @relation(fields: [materialId], references: [id])
+  batch             InventoryBatch?    @relation(fields: [batchId], references: [id])
+  qcItems           QcInspectionItem[]
+
+  @@index([goodsReceiptId])
+  @@index([materialId])
+  @@map("goods_receipt_items")
+}
+
+model QcInspection {
+  id             String    @id @default(cuid())
+  companyId      String    @map("company_id")
+  goodsReceiptId String    @map("goods_receipt_id")
+  number         String
+  inspectedAt    DateTime  @default(now()) @map("inspected_at")
+  inspectedBy    String?   @map("inspected_by")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  goodsReceipt GoodsReceipt        @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  items        QcInspectionItem[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("qc_inspections")
+}
+
+model QcInspectionItem {
+  id                 String   @id @default(cuid())
+  qcInspectionId     String   @map("qc_inspection_id")
+  goodsReceiptItemId String   @map("goods_receipt_item_id")
+  result             QcResult
+  acceptedQty        Float    @default(0) @map("accepted_qty")
+  rejectedQty        Float    @default(0) @map("rejected_qty")
+  deviationQty       Float    @default(0) @map("deviation_qty")
+  reworkQty          Float    @default(0) @map("rework_qty")
+  inspectionPct      Float?   @map("inspection_pct")
+  remarks            String?
+
+  qcInspection     QcInspection     @relation(fields: [qcInspectionId], references: [id], onDelete: Cascade)
+  goodsReceiptItem GoodsReceiptItem @relation(fields: [goodsReceiptItemId], references: [id])
+
+  @@index([qcInspectionId])
+  @@map("qc_inspection_items")
+}
+
+model InventoryBatch {
+  id                String    @id @default(cuid())
+  companyId         String    @map("company_id")
+  materialId        String    @map("material_id")
+  goodsReceiptId    String?   @map("goods_receipt_id")
+  batchNumber       String    @map("batch_number")
+  supplierBatch     String?   @map("supplier_batch")
+  manufacturingDate DateTime? @map("manufacturing_date")
+  expiryDate        DateTime? @map("expiry_date")
+  lotNumber         String?   @map("lot_number")
+  heatNumber        String?   @map("heat_number")
+  barcode           String?
+  qrPayload         String?   @map("qr_payload")
+  receivedAt        DateTime  @default(now()) @map("received_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  company        Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  material       Material               @relation(fields: [materialId], references: [id])
+  goodsReceipt   GoodsReceipt?          @relation(fields: [goodsReceiptId], references: [id])
+  grnItems       GoodsReceiptItem[]
+  stocks         InventoryStock[]
+  transactions   InventoryTransaction[]
+  issueItems     MaterialIssueItem[]
+  returnItems    MaterialReturnItem[]
+  transferLines  StockTransferLine[]
+  reservations   PlanningReservation[]
+  fifoOverrides  FifoOverrideLog[]
+  traceLinksFrom BatchTraceabilityLink[] @relation("TraceFromBatch")
+  traceLinksTo   BatchTraceabilityLink[] @relation("TraceToBatch")
+  serials        InventorySerial[]
+  dispatchLines  DispatchLine[]
+
+  @@unique([companyId, batchNumber])
+  @@index([companyId, materialId])
+  @@index([receivedAt])
+  @@map("inventory_batches")
+}
+
+model InventoryStock {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  materialId  String   @map("material_id")
+  batchId     String   @map("batch_id")
+  warehouseId String   @map("warehouse_id")
+  locationId  String?  @map("location_id")
+  status      String
+  quantity    Float    @default(0)
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  material  Material        @relation(fields: [materialId], references: [id])
+  batch     InventoryBatch  @relation(fields: [batchId], references: [id])
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id])
+  location  Location?       @relation(fields: [locationId], references: [id])
+
+  @@unique([companyId, materialId, batchId, warehouseId, locationId, status])
+  @@index([companyId, materialId, status])
+  @@index([warehouseId])
+  @@map("inventory_stock")
+}
+
+model InventoryTransaction {
+  id              String   @id @default(cuid())
+  companyId       String   @map("company_id")
+  materialId      String   @map("material_id")
+  batchId         String?  @map("batch_id")
+  warehouseId     String?  @map("warehouse_id")
+  locationId      String?  @map("location_id")
+  transactionType String   @map("transaction_type")
+  status          String?
+  quantity        Float
+  balanceAfter    Float?   @map("balance_after")
+  referenceType   String?  @map("reference_type")
+  referenceId     String?  @map("reference_id")
+  notes           String?
+  createdById     String?  @map("created_by_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  material  Material        @relation(fields: [materialId], references: [id])
+  batch     InventoryBatch? @relation(fields: [batchId], references: [id])
+  warehouse Warehouse?      @relation(fields: [warehouseId], references: [id])
+  location  Location?       @relation(fields: [locationId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@index([materialId])
+  @@index([batchId])
+  @@index([referenceType, referenceId])
+  @@map("inventory_transactions")
+}
+
+model MaterialIssue {
+  id                String      @id @default(cuid())
+  companyId         String      @map("company_id")
+  number            String
+  productionOrderId String?     @map("production_order_id")
+  warehouseId       String      @map("warehouse_id")
+  status            IssueStatus @default(posted)
+  issueDate         DateTime    @default(now()) @map("issue_date")
+  issuedBy          String?     @map("issued_by")
+  receivedBy        String?     @map("received_by")
+  notes             String?
+  createdById       String?     @map("created_by_id")
+  createdAt         DateTime    @default(now()) @map("created_at")
+
+  company         Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  productionOrder ProductionOrder?   @relation(fields: [productionOrderId], references: [id])
+  warehouse       Warehouse          @relation(fields: [warehouseId], references: [id])
+  items           MaterialIssueItem[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("material_issues")
+}
+
+model MaterialIssueItem {
+  id               String  @id @default(cuid())
+  materialIssueId  String  @map("material_issue_id")
+  materialId       String  @map("material_id")
+  batchId          String  @map("batch_id")
+  quantity         Float
+  fifoOverride     Boolean @default(false) @map("fifo_override")
+
+  materialIssue MaterialIssue  @relation(fields: [materialIssueId], references: [id], onDelete: Cascade)
+  material      Material       @relation(fields: [materialId], references: [id])
+  batch         InventoryBatch @relation(fields: [batchId], references: [id])
+  serials       InventorySerial[]
+
+  @@index([materialIssueId])
+  @@map("material_issue_items")
+}
+
+model MaterialReturn {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  number      String
+  warehouseId String   @map("warehouse_id")
+  returnDate  DateTime @default(now()) @map("return_date")
+  returnedBy  String?  @map("returned_by")
+  notes       String?
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company   Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  warehouse Warehouse            @relation(fields: [warehouseId], references: [id])
+  items     MaterialReturnItem[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("material_returns")
+}
+
+model MaterialReturnItem {
+  id               String @id @default(cuid())
+  materialReturnId String @map("material_return_id")
+  materialId       String @map("material_id")
+  batchId          String @map("batch_id")
+  quantity         Float
+  condition        String @default("good")
+
+  materialReturn MaterialReturn @relation(fields: [materialReturnId], references: [id], onDelete: Cascade)
+  material       Material       @relation(fields: [materialId], references: [id])
+  batch          InventoryBatch @relation(fields: [batchId], references: [id])
+
+  @@index([materialReturnId])
+  @@map("material_return_items")
+}
+
+model StockTransfer {
+  id              String         @id @default(cuid())
+  companyId       String         @map("company_id")
+  number          String
+  fromWarehouseId String         @map("from_warehouse_id")
+  toWarehouseId   String         @map("to_warehouse_id")
+  status          TransferStatus @default(posted)
+  transferDate    DateTime       @default(now()) @map("transfer_date")
+  notes           String?
+  createdById     String?        @map("created_by_id")
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  company       Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fromWarehouse Warehouse           @relation("TransferFromWh", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse           @relation("TransferToWh", fields: [toWarehouseId], references: [id])
+  lines         StockTransferLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("stock_transfers")
+}
+
+model StockTransferLine {
+  id              String  @id @default(cuid())
+  stockTransferId String  @map("stock_transfer_id")
+  materialId      String  @map("material_id")
+  batchId         String  @map("batch_id")
+  fromLocationId  String? @map("from_location_id")
+  toLocationId    String? @map("to_location_id")
+  quantity        Float
+  status          String  @default("available")
+
+  stockTransfer StockTransfer  @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  material      Material       @relation(fields: [materialId], references: [id])
+  batch         InventoryBatch @relation(fields: [batchId], references: [id])
+  fromLocation  Location?      @relation("TransferFromLoc", fields: [fromLocationId], references: [id])
+  toLocation    Location?      @relation("TransferToLoc", fields: [toLocationId], references: [id])
+
+  @@index([stockTransferId])
+  @@map("stock_transfer_lines")
+}
+
+model PlanningReservation {
+  id                String            @id @default(cuid())
+  companyId         String            @map("company_id")
+  materialId        String            @map("material_id")
+  batchId           String?           @map("batch_id")
+  productionOrderId String?           @map("production_order_id")
+  quantity          Float
+  status            ReservationStatus @default(active)
+  productionDate    DateTime?         @map("production_date")
+  priority          Int               @default(5)
+  notes             String?
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  material        Material         @relation(fields: [materialId], references: [id])
+  batch           InventoryBatch?  @relation(fields: [batchId], references: [id])
+  productionOrder ProductionOrder? @relation(fields: [productionOrderId], references: [id])
+
+  @@index([companyId, status])
+  @@index([materialId])
+  @@map("planning_reservations")
+}
+
+model BatchTraceabilityLink {
+  id           String        @id @default(cuid())
+  companyId    String        @map("company_id")
+  linkType     TraceLinkType @map("link_type")
+  fromBatchId  String?       @map("from_batch_id")
+  toBatchId    String?       @map("to_batch_id")
+  referenceType String?      @map("reference_type")
+  referenceId  String?       @map("reference_id")
+  meta         Json?
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  fromBatch InventoryBatch? @relation("TraceFromBatch", fields: [fromBatchId], references: [id])
+  toBatch   InventoryBatch? @relation("TraceToBatch", fields: [toBatchId], references: [id])
+
+  @@index([companyId])
+  @@index([fromBatchId])
+  @@index([toBatchId])
+  @@map("batch_traceability_links")
+}
+
+model FifoOverrideLog {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  materialId  String   @map("material_id")
+  batchId     String   @map("batch_id")
+  quantity    Float
+  reason      String?
+  approvedBy  String?  @map("approved_by")
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  batch   InventoryBatch @relation(fields: [batchId], references: [id])
+
+  @@index([companyId])
+  @@map("fifo_override_logs")
+}
+
+// --- BOM (thin) ---
+model BomHeader {
+  id         String   @id @default(cuid())
+  companyId  String   @map("company_id")
+  materialId String   @map("material_id")
+  version    String   @default("v1")
+  status     String   @default("draft")
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  material Material  @relation(fields: [materialId], references: [id])
+  lines    BomLine[]
+
+  @@unique([companyId, materialId, version])
+  @@index([companyId])
+  @@map("bom_headers")
+}
+
+model BomLine {
+  id                  String @id @default(cuid())
+  bomHeaderId         String @map("bom_header_id")
+  componentMaterialId String @map("component_material_id")
+  quantity            Float
+  scrapFactor         Float? @map("scrap_factor")
+
+  bomHeader         BomHeader @relation(fields: [bomHeaderId], references: [id], onDelete: Cascade)
+  componentMaterial Material  @relation("BomComponent", fields: [componentMaterialId], references: [id])
+
+  @@index([bomHeaderId])
+  @@map("bom_lines")
+}
+
+// --- Serials (thin) ---
+model InventorySerial {
+  id                 String   @id @default(cuid())
+  companyId          String   @map("company_id")
+  materialId         String   @map("material_id")
+  batchId            String?  @map("batch_id")
+  serialNumber       String   @map("serial_number")
+  status             String   @default("available")
+  materialIssueItemId String? @map("material_issue_item_id")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  material          Material           @relation(fields: [materialId], references: [id])
+  batch             InventoryBatch?    @relation(fields: [batchId], references: [id])
+  materialIssueItem MaterialIssueItem? @relation(fields: [materialIssueItemId], references: [id])
+
+  @@unique([companyId, serialNumber])
+  @@index([companyId, materialId])
+  @@index([batchId])
+  @@map("inventory_serials")
+}
+
+// --- Dispatch / FG ship ---
+model DispatchOrder {
+  id           String    @id @default(cuid())
+  companyId    String    @map("company_id")
+  number       String
+  customerName String?   @map("customer_name")
+  status       String    @default("draft")
+  shipDate     DateTime? @map("ship_date")
+  warehouseId  String    @map("warehouse_id")
+  notes        String?
+  createdById  String?   @map("created_by_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  company   Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+  lines     DispatchLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId])
+  @@map("dispatch_orders")
+}
+
+model DispatchLine {
+  id              String @id @default(cuid())
+  dispatchOrderId String @map("dispatch_order_id")
+  materialId      String @map("material_id")
+  batchId         String? @map("batch_id")
+  quantity        Float
+  serialIds       Json?  @map("serial_ids")
+
+  dispatchOrder DispatchOrder  @relation(fields: [dispatchOrderId], references: [id], onDelete: Cascade)
+  material      Material       @relation(fields: [materialId], references: [id])
+  batch         InventoryBatch? @relation(fields: [batchId], references: [id])
+
+  @@index([dispatchOrderId])
+  @@map("dispatch_lines")
+}
